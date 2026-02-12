@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /institutions/{institutionId} {
+      allow get: if true;
+      allow list: if false;
+      allow update: if request.auth != null
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.institutionCode == institutionId
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["lat", "lng", "address"]);
+      allow create, delete: if false;
+
+      match /students/{studentCode} {
+        allow get: if true;
+        allow list: if false;
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /studentCodes/{studentCode} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    match /studentAccounts/{studentCode} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if request.auth != null
+        && request.resource.data.code == studentCode
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.institutionCode == "L1kj2HG3fd4SA5";
+      allow delete: if false;
+    }
+
+    match /routes/{routeId}/live/{docId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.resource.data.uid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
