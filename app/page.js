@@ -44,6 +44,8 @@ const ROUTE_STOPS = {
   ],
 };
 
+const getRouteKeys = () => Object.keys(ROUTE_STOPS);
+
 let loaderPromise;
 
 function loadGoogleMaps(apiKey) {
@@ -161,6 +163,36 @@ function HomeContent() {
       .trim()
       .toLowerCase()
       .replace(/\s+/g, " ");
+  };
+
+  const resolveRouteKey = (currentProfile) => {
+    if (!currentProfile) return null;
+    const institutionCode = currentProfile?.institutionCode?.toString().trim();
+    const normalizedRoute = normalizeRoute(currentProfile?.route);
+
+    if (institutionCode && normalizedRoute) {
+      const exact = `${institutionCode}:${normalizedRoute}`;
+      if (ROUTE_STOPS[exact]) return exact;
+    }
+
+    const keys = getRouteKeys();
+
+    if (institutionCode) {
+      const byInstitution = keys.filter((key) =>
+        key.startsWith(`${institutionCode}:`)
+      );
+      if (byInstitution.length === 1) return byInstitution[0];
+    }
+
+    if (normalizedRoute) {
+      const byRoute = keys.filter((key) => key.endsWith(`:${normalizedRoute}`));
+      if (byRoute.length === 1) return byRoute[0];
+    }
+
+    // Current project has one configured route, so fallback keeps map functional.
+    if (keys.length === 1) return keys[0];
+
+    return null;
   };
 
   const maybeUploadLocation = async (coords) => {
@@ -340,10 +372,7 @@ function HomeContent() {
 
   const updateEta = async (coords) => {
     if (!coords || !profile) return;
-    const routeKey =
-      profile?.institutionCode && profile?.route
-        ? `${profile.institutionCode}:${normalizeRoute(profile.route)}`
-        : null;
+    const routeKey = resolveRouteKey(profile);
     const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
     const destinationStop = routeStops?.[routeStops.length - 1];
     if (!destinationStop?.coords) return;
@@ -537,15 +566,19 @@ function HomeContent() {
   const createMarker = (google, { position, map, title, kind }) => {
     const AdvancedMarker = google.maps?.marker?.AdvancedMarkerElement;
     if (AdvancedMarker && map?.getMapId && map.getMapId()) {
-      const content = document.createElement("div");
-      content.className =
-        kind === "user" ? "marker-dot marker-user" : "marker-dot marker-stop";
-      return new AdvancedMarker({
-        map,
-        position,
-        title,
-        content,
-      });
+      try {
+        const content = document.createElement("div");
+        content.className =
+          kind === "user" ? "marker-dot marker-user" : "marker-dot marker-stop";
+        return new AdvancedMarker({
+          map,
+          position,
+          title,
+          content,
+        });
+      } catch (err) {
+        // Fall back to classic marker when advanced markers fail by environment.
+      }
     }
 
     const icon =
@@ -680,10 +713,7 @@ function HomeContent() {
         }
       };
 
-      const routeKey =
-        profile?.institutionCode && profile?.route
-          ? `${profile.institutionCode}:${normalizeRoute(profile.route)}`
-          : null;
+      const routeKey = resolveRouteKey(profile);
       const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
       // no logging
       const stopCandidates = [];
@@ -812,10 +842,7 @@ function HomeContent() {
   useEffect(() => {
     const targetStop = searchParams?.get("stop");
     if (!targetStop || !profile || !mapReady) return;
-    const routeKey =
-      profile?.institutionCode && profile?.route
-        ? `${profile.institutionCode}:${normalizeRoute(profile.route)}`
-        : null;
+    const routeKey = resolveRouteKey(profile);
     const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
     if (!routeStops?.length) return;
     const stop = routeStops.find(
