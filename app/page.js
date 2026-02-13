@@ -739,7 +739,10 @@ function HomeContent() {
         stopReadyRef.current = true;
         updateLoadingState();
 
-        if (routeStops?.length >= 2 && routeKeyRef.current !== routeKey) {
+        if (
+          routeStops?.length >= 2 &&
+          (routeKeyRef.current !== routeKey || !routePolylineRef.current)
+        ) {
           routeKeyRef.current = routeKey;
           const routeCoords = coordsList.map((item) => item.coords);
           if (routeCoords.length >= 2) {
@@ -776,13 +779,13 @@ function HomeContent() {
                     });
                   }
                 } else {
-                  // ignore
+                  routeKeyRef.current = null;
                 }
               } else {
-                // ignore
+                routeKeyRef.current = null;
               }
             } catch (err) {
-              // ignore
+              routeKeyRef.current = null;
             }
           }
         }
@@ -904,7 +907,11 @@ function HomeContent() {
   useEffect(() => {
     if (!profile) return;
     const interval = setInterval(() => {
-      if (!stopReadyRef.current || !schoolReadyRef.current) {
+      if (
+        !stopReadyRef.current ||
+        !schoolReadyRef.current ||
+        !routePolylineRef.current
+      ) {
         updateRouteMarkers();
       }
     }, 4000);
