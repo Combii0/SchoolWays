@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
@@ -68,7 +68,7 @@ function loadGoogleMaps(apiKey) {
   return loaderPromise;
 }
 
-export default function Home() {
+function HomeContent() {
   const searchParams = useSearchParams();
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -1011,5 +1011,19 @@ export default function Home() {
         </svg>
       </button>
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense
+      fallback={
+        <main className="map-page">
+          <AuthPanel />
+        </main>
+      }
+    >
+      <HomeContent />
+    </Suspense>
   );
 }
