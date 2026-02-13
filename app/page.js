@@ -45,6 +45,19 @@ const ROUTE_STOPS = {
 };
 
 const getRouteKeys = () => Object.keys(ROUTE_STOPS);
+const toLowerText = (value) =>
+  value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
+
+const isMonitorProfile = (profile) => {
+  const role = toLowerText(profile?.role);
+  const accountType = toLowerText(profile?.accountType);
+  return (
+    role === "monitor" ||
+    role === "monitora" ||
+    accountType === "monitor" ||
+    accountType === "monitora"
+  );
+};
 
 let loaderPromise;
 
@@ -199,7 +212,9 @@ function HomeContent() {
     try {
       const currentUser = auth.currentUser;
       const currentProfile = profileRef.current;
-      if (!currentUser || !currentProfile?.route) return;
+      if (!currentUser || !currentProfile?.route || !isMonitorProfile(currentProfile)) {
+        return;
+      }
 
       const now = Date.now();
       if (now - lastUploadRef.current < 5000) return;
@@ -225,7 +240,8 @@ function HomeContent() {
     }
   };
 
-  const updateMarker = (google, map, coords) => {
+  const updateMarker = (google, map, coords, options = {}) => {
+    const shouldUpload = options.upload !== false;
     lastPositionRef.current = coords;
 
     if (!userMarkerRef.current) {
@@ -245,7 +261,9 @@ function HomeContent() {
       map.panTo(coords);
     }
 
-    void maybeUploadLocation(coords);
+    if (shouldUpload) {
+      void maybeUploadLocation(coords);
+    }
   };
 
   const parseCoord = (value) => {
@@ -920,11 +938,54 @@ function HomeContent() {
 
   useEffect(() => {
     if (!profile || !mapReady) return;
-    requestLocation();
+    if (isMonitorProfile(profile)) {
+      requestLocation();
+    }
     updateRouteMarkers();
     if (mapInstanceRef.current && window.google?.maps) {
       window.google.maps.event.trigger(mapInstanceRef.current, "resize");
     }
+  }, [profile, mapReady]);
+
+  useEffect(() => {
+    if (!profile || !mapReady || !window.google) return;
+    if (isMonitorProfile(profile)) return;
+
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    const routeId = getRouteId(profile.route);
+    if (!routeId) return;
+
+    const liveRef = doc(db, "routes", routeId, "live", "current");
+    const unsubscribe = onSnapshot(liveRef, (snap) => {
+      const data = snap.exists() ? snap.data() : null;
+      const lat = parseCoord(data?.lat);
+      const lng = parseCoord(data?.lng);
+
+      if (lat !== null && lng !== null) {
+        const coords = { lat, lng };
+        updateMarker(window.google, map, coords, { upload: false });
+        void updateEta(coords);
+        return;
+      }
+
+      if (!lastPositionRef.current) {
+        const routeKey = resolveRouteKey(profile);
+        const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
+        const firstStop = routeStops?.[0];
+        if (firstStop?.coords) {
+          const coords = {
+            lat: firstStop.coords.lat,
+            lng: firstStop.coords.lng,
+          };
+          updateMarker(window.google, map, coords, { upload: false });
+          void updateEta(coords);
+        }
+      }
+    });
+
+    return () => unsubscribe();
   }, [profile, mapReady]);
 
   useEffect(() => {
@@ -975,8 +1036,10 @@ function HomeContent() {
       return;
     }
 
-    // If we don't have a cached position yet, request it and center when ready.
-    requestLocation();
+    if (profile && isMonitorProfile(profile)) {
+      // For monitor, center on fresh device location if cache is missing.
+      requestLocation();
+    }
     if (userMarkerRef.current) {
       const markerPos =
         userMarkerRef.current.position ||
