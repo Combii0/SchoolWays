@@ -59,6 +59,35 @@ const isMonitorProfile = (profile) => {
   );
 };
 
+const toRadians = (value) => (value * Math.PI) / 180;
+
+const distanceMetersBetween = (a, b) => {
+  if (!a || !b) return null;
+  const lat1 = Number(a.lat);
+  const lng1 = Number(a.lng);
+  const lat2 = Number(b.lat);
+  const lng2 = Number(b.lng);
+  if (
+    !Number.isFinite(lat1) ||
+    !Number.isFinite(lng1) ||
+    !Number.isFinite(lat2) ||
+    !Number.isFinite(lng2)
+  ) {
+    return null;
+  }
+
+  const earthRadius = 6371000;
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lng2 - lng1);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const aa =
+    sinLat * sinLat +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * sinLng * sinLng;
+  const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+  return earthRadius * cc;
+};
+
 let loaderPromise;
 
 function loadGoogleMaps(apiKey) {
@@ -402,6 +431,16 @@ function HomeContent() {
     etaLastFetchRef.current = now;
     etaKeyRef.current = routeKey;
 
+    const fallbackDistance = distanceMetersBetween(coords, destinationStop.coords);
+    const applyFallbackEta = () => {
+      if (!Number.isFinite(fallbackDistance)) return;
+      const km = fallbackDistance / 1000;
+      // 24 km/h average urban bus speed to keep ETA realistic when API is unavailable.
+      const minutes = Math.max(1, Math.round((km / 24) * 60));
+      setEtaDistanceKm(km.toFixed(1));
+      setEtaMinutes(minutes);
+    };
+
     try {
       const response = await fetch("/api/routes", {
         method: "POST",
@@ -414,7 +453,10 @@ function HomeContent() {
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) return;
+      if (!response.ok) {
+        applyFallbackEta();
+        return;
+      }
 
       const distanceMeters =
         typeof data.distanceMeters === "number" ? data.distanceMeters : null;
@@ -422,12 +464,16 @@ function HomeContent() {
 
       if (distanceMeters !== null) {
         setEtaDistanceKm((distanceMeters / 1000).toFixed(1));
+      } else if (Number.isFinite(fallbackDistance)) {
+        setEtaDistanceKm((fallbackDistance / 1000).toFixed(1));
       }
       if (durationSeconds !== null) {
         setEtaMinutes(Math.max(1, Math.round(durationSeconds / 60)));
+      } else {
+        applyFallbackEta();
       }
     } catch (err) {
-      // ignore
+      applyFallbackEta();
     }
   };
 
@@ -827,12 +873,60 @@ function HomeContent() {
                     });
                   }
                 } else {
+                  const fallbackPath = routeCoords.map((point) => ({
+                    lat: point.lat(),
+                    lng: point.lng(),
+                  }));
+                  if (!routePolylineRef.current) {
+                    routePolylineRef.current = new google.maps.Polyline({
+                      path: fallbackPath,
+                      map,
+                      strokeColor: "#5aa9ff",
+                      strokeOpacity: 0.75,
+                      strokeWeight: 5,
+                    });
+                  } else {
+                    routePolylineRef.current.setPath(fallbackPath);
+                    routePolylineRef.current.setMap(map);
+                  }
                   routeKeyRef.current = null;
                 }
               } else {
+                const fallbackPath = routeCoords.map((point) => ({
+                  lat: point.lat(),
+                  lng: point.lng(),
+                }));
+                if (!routePolylineRef.current) {
+                  routePolylineRef.current = new google.maps.Polyline({
+                    path: fallbackPath,
+                    map,
+                    strokeColor: "#5aa9ff",
+                    strokeOpacity: 0.75,
+                    strokeWeight: 5,
+                  });
+                } else {
+                  routePolylineRef.current.setPath(fallbackPath);
+                  routePolylineRef.current.setMap(map);
+                }
                 routeKeyRef.current = null;
               }
             } catch (err) {
+              const fallbackPath = routeCoords.map((point) => ({
+                lat: point.lat(),
+                lng: point.lng(),
+              }));
+              if (!routePolylineRef.current) {
+                routePolylineRef.current = new google.maps.Polyline({
+                  path: fallbackPath,
+                  map,
+                  strokeColor: "#5aa9ff",
+                  strokeOpacity: 0.75,
+                  strokeWeight: 5,
+                });
+              } else {
+                routePolylineRef.current.setPath(fallbackPath);
+                routePolylineRef.current.setMap(map);
+              }
               routeKeyRef.current = null;
             }
           }
@@ -954,7 +1048,9 @@ function HomeContent() {
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    const routeId = getRouteId(profile.route);
+    const routeKey = resolveRouteKey(profile);
+    const routeNameFromKey = routeKey ? routeKey.split(":")[1] : null;
+    const routeId = getRouteId(profile.route || routeNameFromKey);
     if (!routeId) return;
 
     const liveRef = doc(db, "routes", routeId, "live", "current");
