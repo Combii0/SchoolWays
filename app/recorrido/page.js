@@ -41,12 +41,93 @@ const normalizeRoute = (route) => {
     .replace(/\s+/g, " ");
 };
 
+const toLowerText = (value) =>
+  value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
+
+const isMonitorProfile = (profile) => {
+  const role = toLowerText(profile?.role);
+  const accountType = toLowerText(profile?.accountType);
+  return (
+    role === "monitor" ||
+    role === "monitora" ||
+    accountType === "monitor" ||
+    accountType === "monitora"
+  );
+};
+
+const toRadians = (value) => (value * Math.PI) / 180;
+
+const distanceMetersBetween = (a, b) => {
+  if (!a || !b) return null;
+  const lat1 = Number(a.lat);
+  const lng1 = Number(a.lng);
+  const lat2 = Number(b.lat);
+  const lng2 = Number(b.lng);
+  if (
+    !Number.isFinite(lat1) ||
+    !Number.isFinite(lng1) ||
+    !Number.isFinite(lat2) ||
+    !Number.isFinite(lng2)
+  ) {
+    return null;
+  }
+
+  const earthRadius = 6371000;
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lng2 - lng1);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const aa =
+    sinLat * sinLat +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * sinLng * sinLng;
+  const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+  return earthRadius * cc;
+};
+
 const parseDurationSeconds = (value) => {
   if (typeof value === "string" && value.endsWith("s")) {
     const parsed = Number.parseFloat(value.replace("s", ""));
     return Number.isFinite(parsed) ? parsed : null;
   }
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  return null;
+};
+
+const getRouteId = (route) => {
+  if (!route) return null;
+  return route
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+};
+
+const resolveRouteKey = (profile) => {
+  if (!profile) return null;
+  const institutionCode = profile?.institutionCode?.toString().trim();
+  const normalizedRoute = normalizeRoute(profile?.route);
+
+  if (institutionCode && normalizedRoute) {
+    const exact = `${institutionCode}:${normalizedRoute}`;
+    if (ROUTE_STOPS[exact]) return exact;
+  }
+
+  const keys = Object.keys(ROUTE_STOPS);
+
+  if (institutionCode) {
+    const byInstitution = keys.filter((key) =>
+      key.startsWith(`${institutionCode}:`)
+    );
+    if (byInstitution.length === 1) return byInstitution[0];
+  }
+
+  if (normalizedRoute) {
+    const byRoute = keys.filter((key) => key.endsWith(`:${normalizedRoute}`));
+    if (byRoute.length === 1) return byRoute[0];
+  }
+
+  if (keys.length === 1) return keys[0];
   return null;
 };
 
@@ -78,6 +159,7 @@ export default function RecorridoPage() {
 
   useEffect(() => {
     if (!profile) return;
+    if (!isMonitorProfile(profile)) return;
     if (!("geolocation" in navigator)) return;
 
     if (watchIdRef.current !== null) {
@@ -104,12 +186,38 @@ export default function RecorridoPage() {
   }, [profile]);
 
   useEffect(() => {
+    if (!profile) return;
+    if (isMonitorProfile(profile)) return;
+
+    const routeKey = resolveRouteKey(profile);
+    const routeNameFromKey = routeKey ? routeKey.split(":")[1] : null;
+    const routeId = getRouteId(profile.route || routeNameFromKey);
+    if (!routeId) return;
+
+    const liveRef = doc(db, "routes", routeId, "live", "current");
+    const unsubLive = onSnapshot(liveRef, (snap) => {
+      const data = snap.exists() ? snap.data() : null;
+      const lat = Number(data?.lat);
+      const lng = Number(data?.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        setBusCoords({ lat, lng });
+        return;
+      }
+
+      const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
+      const firstStop = routeStops?.[0]?.coords;
+      if (firstStop) {
+        setBusCoords({ lat: firstStop.lat, lng: firstStop.lng });
+      }
+    });
+
+    return () => unsubLive();
+  }, [profile]);
+
+  useEffect(() => {
     const updateEtas = async () => {
       if (!profile || !busCoords) return;
-      const routeKey =
-        profile?.institutionCode && profile?.route
-          ? `${profile.institutionCode}:${normalizeRoute(profile.route)}`
-          : null;
+      const routeKey = resolveRouteKey(profile);
       const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
       if (!routeStops?.length) {
         setStopEtas([]);
@@ -131,6 +239,12 @@ export default function RecorridoPage() {
               completed: false,
             };
           }
+
+          const fallbackMeters = distanceMetersBetween(busCoords, stop.coords);
+          const fallbackMinutes = Number.isFinite(fallbackMeters)
+            ? Math.max(1, Math.round(((fallbackMeters / 1000) / 24) * 60))
+            : null;
+
           try {
             const response = await fetch("/api/routes", {
               method: "POST",
@@ -146,21 +260,29 @@ export default function RecorridoPage() {
             if (!response.ok) {
               return {
                 title: stop.title,
-                distanceKm: null,
-                minutes: null,
-                completed: false,
+                order: index,
+                distanceKm:
+                  Number.isFinite(fallbackMeters)
+                    ? (fallbackMeters / 1000).toFixed(1)
+                    : null,
+                minutes: fallbackMinutes,
+                completed: Number.isFinite(fallbackMeters)
+                  ? fallbackMeters <= 200
+                  : false,
               };
             }
 
             const distanceMeters =
-              typeof data.distanceMeters === "number" ? data.distanceMeters : null;
+              typeof data.distanceMeters === "number"
+                ? data.distanceMeters
+                : fallbackMeters;
             const durationSeconds = parseDurationSeconds(data.duration);
             const distanceKm =
               distanceMeters !== null ? (distanceMeters / 1000).toFixed(1) : null;
             const minutes =
               durationSeconds !== null
                 ? Math.max(1, Math.round(durationSeconds / 60))
-                : null;
+                : fallbackMinutes;
             const completed =
               distanceMeters !== null ? distanceMeters <= 200 : false;
 
@@ -175,9 +297,14 @@ export default function RecorridoPage() {
             return {
               title: stop.title,
               order: index,
-              distanceKm: null,
-              minutes: null,
-              completed: false,
+              distanceKm:
+                Number.isFinite(fallbackMeters)
+                  ? (fallbackMeters / 1000).toFixed(1)
+                  : null,
+              minutes: fallbackMinutes,
+              completed: Number.isFinite(fallbackMeters)
+                ? fallbackMeters <= 200
+                : false,
             };
           }
         })
