@@ -351,6 +351,65 @@ function HomeContent() {
     return coordinates;
   };
 
+  const setRoutePolylinePath = (google, map, path, options = {}) => {
+    if (!Array.isArray(path) || path.length < 2) return false;
+    const baseStyle = {
+      strokeColor: "#5aa9ff",
+      strokeOpacity: 0.85,
+      strokeWeight: 6,
+    };
+    const style = { ...baseStyle, ...options };
+    if (!routePolylineRef.current) {
+      routePolylineRef.current = new google.maps.Polyline({
+        path,
+        map,
+        ...style,
+      });
+      return true;
+    }
+    routePolylineRef.current.setPath(path);
+    routePolylineRef.current.setMap(map);
+    routePolylineRef.current.setOptions(style);
+    return true;
+  };
+
+  const drawRouteWithDirectionsService = async (google, map, routeCoords) => {
+    if (!Array.isArray(routeCoords) || routeCoords.length < 2) return false;
+    const directionsService = new google.maps.DirectionsService();
+    const waypoints = routeCoords.slice(1, -1).map((point) => ({
+      location: point,
+      stopover: true,
+    }));
+
+    return new Promise((resolve) => {
+      directionsService.route(
+        {
+          origin: routeCoords[0],
+          destination: routeCoords[routeCoords.length - 1],
+          waypoints,
+          optimizeWaypoints: false,
+          travelMode: google.maps.TravelMode.DRIVING,
+        },
+        (result, status) => {
+          if (
+            status !== "OK" ||
+            !result?.routes?.[0]?.overview_path ||
+            !result.routes[0].overview_path.length
+          ) {
+            resolve(false);
+            return;
+          }
+
+          const path = result.routes[0].overview_path.map((point) => ({
+            lat: point.lat(),
+            lng: point.lng(),
+          }));
+          resolve(setRoutePolylinePath(google, map, path));
+        }
+      );
+    });
+  };
+
   const requestLocation = () => {
     const map = mapInstanceRef.current;
     if (!map || !window.google) return;
@@ -840,6 +899,7 @@ function HomeContent() {
           routeKeyRef.current = routeKey;
           const routeCoords = coordsList.map((item) => item.coords);
           if (routeCoords.length >= 2) {
+            let routeDrawn = false;
             try {
               const response = await fetch("/api/routes", {
                 method: "POST",
@@ -855,78 +915,30 @@ function HomeContent() {
               if (response.ok && data?.encodedPolyline) {
                 const path = decodePolyline(data.encodedPolyline);
                 if (path.length) {
-                  if (!routePolylineRef.current) {
-                    routePolylineRef.current = new google.maps.Polyline({
-                      path,
-                      map,
-                      strokeColor: "#5aa9ff",
-                      strokeOpacity: 0.85,
-                      strokeWeight: 6,
-                    });
-                  } else {
-                    routePolylineRef.current.setPath(path);
-                    routePolylineRef.current.setMap(map);
-                    routePolylineRef.current.setOptions({
-                      strokeColor: "#5aa9ff",
-                      strokeOpacity: 0.85,
-                      strokeWeight: 6,
-                    });
-                  }
-                } else {
-                  const fallbackPath = routeCoords.map((point) => ({
-                    lat: point.lat(),
-                    lng: point.lng(),
-                  }));
-                  if (!routePolylineRef.current) {
-                    routePolylineRef.current = new google.maps.Polyline({
-                      path: fallbackPath,
-                      map,
-                      strokeColor: "#5aa9ff",
-                      strokeOpacity: 0.75,
-                      strokeWeight: 5,
-                    });
-                  } else {
-                    routePolylineRef.current.setPath(fallbackPath);
-                    routePolylineRef.current.setMap(map);
-                  }
-                  routeKeyRef.current = null;
+                  routeDrawn = setRoutePolylinePath(google, map, path);
                 }
-              } else {
-                const fallbackPath = routeCoords.map((point) => ({
-                  lat: point.lat(),
-                  lng: point.lng(),
-                }));
-                if (!routePolylineRef.current) {
-                  routePolylineRef.current = new google.maps.Polyline({
-                    path: fallbackPath,
-                    map,
-                    strokeColor: "#5aa9ff",
-                    strokeOpacity: 0.75,
-                    strokeWeight: 5,
-                  });
-                } else {
-                  routePolylineRef.current.setPath(fallbackPath);
-                  routePolylineRef.current.setMap(map);
-                }
-                routeKeyRef.current = null;
               }
             } catch (err) {
+              routeDrawn = false;
+            }
+
+            if (!routeDrawn) {
+              routeDrawn = await drawRouteWithDirectionsService(
+                google,
+                map,
+                routeCoords
+              );
+            }
+
+            if (!routeDrawn) {
               const fallbackPath = routeCoords.map((point) => ({
                 lat: point.lat(),
                 lng: point.lng(),
               }));
-              if (!routePolylineRef.current) {
-                routePolylineRef.current = new google.maps.Polyline({
-                  path: fallbackPath,
-                  map,
-                  strokeColor: "#5aa9ff",
-                  strokeOpacity: 0.75,
-                  strokeWeight: 5,
-                });
-              } else {
-                routePolylineRef.current.setPath(fallbackPath);
-                routePolylineRef.current.setMap(map);
-              }
+              setRoutePolylinePath(google, map, fallbackPath, {
+                strokeOpacity: 0.75,
+                strokeWeight: 5,
+              });
               routeKeyRef.current = null;
             }
           }

@@ -42,7 +42,7 @@ export async function POST(request) {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": apiKey,
           "X-Goog-FieldMask":
-            "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.optimizedIntermediateWaypointIndex",
+            "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
         },
         body: JSON.stringify({
           origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
@@ -52,7 +52,6 @@ export async function POST(request) {
           intermediates,
           travelMode: "DRIVE",
           routingPreference: "TRAFFIC_AWARE",
-          optimizeWaypointOrder: true,
           polylineQuality: "OVERVIEW",
           polylineEncoding: "ENCODED_POLYLINE",
         }),
