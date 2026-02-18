@@ -158,6 +158,7 @@ export default function AuthPanel() {
           userDocUnsubRef.current = null;
         }
         setUserProfile(null);
+        resetModal();
         setOpen(true);
         return;
       }
@@ -227,7 +228,8 @@ export default function AuthPanel() {
     setError("");
     try {
       await signOut(auth);
-      setOpen(false);
+      resetModal();
+      setOpen(true);
     } finally {
       setPending(false);
     }
