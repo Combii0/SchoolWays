@@ -313,6 +313,25 @@ function HomeContent() {
     return null;
   };
 
+  const fetchRoutesData = async (points, timeoutMs = 9000) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch("/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ points }),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => ({}));
+      return { ok: response.ok, data };
+    } catch (error) {
+      return { ok: false, data: {} };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
   const decodePolyline = (encoded) => {
     if (!encoded) return [];
     let index = 0;
@@ -501,18 +520,11 @@ function HomeContent() {
     };
 
     try {
-      const response = await fetch("/api/routes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          points: [
-            { lat: coords.lat, lng: coords.lng },
-            { lat: destinationStop.coords.lat, lng: destinationStop.coords.lng },
-          ],
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      const { ok, data } = await fetchRoutesData([
+        { lat: coords.lat, lng: coords.lng },
+        { lat: destinationStop.coords.lat, lng: destinationStop.coords.lng },
+      ]);
+      if (!ok) {
         applyFallbackEta();
         return;
       }
@@ -901,18 +913,13 @@ function HomeContent() {
           if (routeCoords.length >= 2) {
             let routeDrawn = false;
             try {
-              const response = await fetch("/api/routes", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  points: routeCoords.map((point) => ({
-                    lat: point.lat(),
-                    lng: point.lng(),
-                  })),
-                }),
-              });
-              const data = await response.json().catch(() => ({}));
-              if (response.ok && data?.encodedPolyline) {
+              const { ok, data } = await fetchRoutesData(
+                routeCoords.map((point) => ({
+                  lat: point.lat(),
+                  lng: point.lng(),
+                }))
+              );
+              if (ok && data?.encodedPolyline) {
                 const path = decodePolyline(data.encodedPolyline);
                 if (path.length) {
                   routeDrawn = setRoutePolylinePath(google, map, path);
@@ -1065,6 +1072,14 @@ function HomeContent() {
     const routeId = getRouteId(profile.route || routeNameFromKey);
     if (!routeId) return;
 
+    const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
+    const firstStop = routeStops?.find((stop) => stop?.coords)?.coords;
+    if (firstStop && !lastPositionRef.current) {
+      const coords = { lat: firstStop.lat, lng: firstStop.lng };
+      updateMarker(window.google, map, coords, { upload: false });
+      void updateEta(coords);
+    }
+
     const liveRef = doc(db, "routes", routeId, "live", "current");
     const unsubscribe = onSnapshot(liveRef, (snap) => {
       const data = snap.exists() ? snap.data() : null;
@@ -1076,20 +1091,6 @@ function HomeContent() {
         updateMarker(window.google, map, coords, { upload: false });
         void updateEta(coords);
         return;
-      }
-
-      if (!lastPositionRef.current) {
-        const routeKey = resolveRouteKey(profile);
-        const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
-        const firstStop = routeStops?.[0];
-        if (firstStop?.coords) {
-          const coords = {
-            lat: firstStop.coords.lat,
-            lng: firstStop.coords.lng,
-          };
-          updateMarker(window.google, map, coords, { upload: false });
-          void updateEta(coords);
-        }
       }
     });
 

@@ -93,6 +93,25 @@ const parseDurationSeconds = (value) => {
   return null;
 };
 
+const fetchRoutesData = async (points, timeoutMs = 9000) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("/api/routes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ points }),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    return { ok: response.ok, data };
+  } catch (error) {
+    return { ok: false, data: {} };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
 const getRouteId = (route) => {
   if (!route) return null;
   return route
@@ -140,21 +159,37 @@ export default function RecorridoPage() {
   const router = useRouter();
 
   useEffect(() => {
+    let unsubscribeProfile = null;
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
       if (!currentUser) {
         setProfile(null);
+        setBusCoords(null);
+        setStopEtas([]);
         return;
       }
 
       const userRef = doc(db, "users", currentUser.uid);
-      const unsubProfile = onSnapshot(userRef, (snap) => {
-        setProfile(snap.exists() ? snap.data() : null);
-      });
-
-      return () => unsubProfile();
+      unsubscribeProfile = onSnapshot(
+        userRef,
+        (snap) => {
+          setProfile(snap.exists() ? snap.data() : null);
+        },
+        () => {
+          setProfile(null);
+        }
+      );
     });
 
-    return () => unsubscribe();
+    return () => {
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+      }
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -194,6 +229,14 @@ export default function RecorridoPage() {
     const routeId = getRouteId(profile.route || routeNameFromKey);
     if (!routeId) return;
 
+    const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
+    const firstStop = routeStops?.find((stop) => stop?.coords)?.coords;
+    if (firstStop) {
+      setBusCoords((prev) =>
+        prev ? prev : { lat: firstStop.lat, lng: firstStop.lng }
+      );
+    }
+
     const liveRef = doc(db, "routes", routeId, "live", "current");
     const unsubLive = onSnapshot(liveRef, (snap) => {
       const data = snap.exists() ? snap.data() : null;
@@ -202,12 +245,6 @@ export default function RecorridoPage() {
       if (Number.isFinite(lat) && Number.isFinite(lng)) {
         setBusCoords({ lat, lng });
         return;
-      }
-
-      const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
-      const firstStop = routeStops?.[0]?.coords;
-      if (firstStop) {
-        setBusCoords({ lat: firstStop.lat, lng: firstStop.lng });
       }
     });
 
@@ -246,18 +283,11 @@ export default function RecorridoPage() {
             : null;
 
           try {
-            const response = await fetch("/api/routes", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                points: [
-                  { lat: busCoords.lat, lng: busCoords.lng },
-                  { lat: stop.coords.lat, lng: stop.coords.lng },
-                ],
-              }),
-            });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) {
+            const { ok, data } = await fetchRoutesData([
+              { lat: busCoords.lat, lng: busCoords.lng },
+              { lat: stop.coords.lat, lng: stop.coords.lng },
+            ]);
+            if (!ok) {
               return {
                 title: stop.title,
                 order: index,
@@ -314,6 +344,23 @@ export default function RecorridoPage() {
     };
 
     updateEtas();
+  }, [profile, busCoords]);
+
+  useEffect(() => {
+    if (!profile || busCoords) return;
+    const routeKey = resolveRouteKey(profile);
+    const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
+    if (!routeStops?.length) return;
+    setStopEtas((prev) => {
+      if (prev.length) return prev;
+      return routeStops.map((stop, index) => ({
+        title: stop.title,
+        order: index,
+        distanceKm: null,
+        minutes: null,
+        completed: false,
+      }));
+    });
   }, [profile, busCoords]);
 
   if (!profile) {
