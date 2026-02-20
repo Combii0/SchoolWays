@@ -1258,11 +1258,13 @@ function HomeContent() {
   };
 
   const createMarker = (google, { position, map, title, kind }) => {
+    const isBusMarker = kind === "user";
+    const markerZIndex = isBusMarker ? 9999 : 120;
     const AdvancedMarker = google.maps?.marker?.AdvancedMarkerElement;
     if (AdvancedMarker && map?.getMapId && map.getMapId()) {
       try {
         const content = document.createElement("div");
-        if (kind === "user") {
+        if (isBusMarker) {
           content.className = "marker-bus-shell";
           const image = document.createElement("img");
           image.src = "/icons/bus.png";
@@ -1280,6 +1282,7 @@ function HomeContent() {
           position,
           title,
           content,
+          zIndex: markerZIndex,
         });
       } catch (err) {
         // Fall back to classic marker when advanced markers fail by environment.
@@ -1287,11 +1290,11 @@ function HomeContent() {
     }
 
     const icon =
-      kind === "user"
+      isBusMarker
         ? {
             url: "/icons/bus.png",
-            scaledSize: new google.maps.Size(30, 30),
-            anchor: new google.maps.Point(15, 15),
+            scaledSize: new google.maps.Size(46, 46),
+            anchor: new google.maps.Point(23, 23),
           }
         : kind === "school"
           ? {
@@ -1306,6 +1309,7 @@ function HomeContent() {
       map,
       title,
       icon,
+      zIndex: markerZIndex,
     });
   };
 
