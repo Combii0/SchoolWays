@@ -1275,34 +1275,37 @@ export default function AuthPanel() {
       ) : null}
 
       {user && showPushBanner ? (
-        <div className="push-banner" role="status" aria-live="polite">
-          <div className="push-banner-title">Notificaciones de Ruta</div>
-          <div className="push-banner-text">
-            {pushUnsupported
-              ? "Tu navegador no soporta push aqui. En iPhone usa Safari y agrega la app a pantalla de inicio."
-              : pushPermissionBlocked
-                ? "Tienes el permiso bloqueado. Activalo en configuracion del navegador para recibir avisos."
-                : "Activa notificaciones para recibir alertas de ruta en segundo plano."}
-          </div>
-          <div className="push-banner-actions">
-            {!pushUnsupported ? (
+        <div className="push-modal-overlay" role="dialog" aria-modal="true">
+          <div className="push-modal" role="status" aria-live="polite">
+            <div className="push-modal-badge">SchoolWays</div>
+            <div className="push-modal-title">Activa tus notificaciones</div>
+            <div className="push-modal-text">
+              {pushUnsupported
+                ? "Tu navegador no soporta push aqui. En iPhone usa Safari y agrega la app a pantalla de inicio."
+                : pushPermissionBlocked
+                  ? "Tienes el permiso bloqueado. Activalo en configuracion del navegador para recibir avisos."
+                  : "Recibe alertas en tiempo real cuando la ruta vaya por ti y cuando ya estes en camino al colegio."}
+            </div>
+            <div className="push-modal-actions">
+              {!pushUnsupported ? (
+                <button
+                  type="button"
+                  className="push-modal-button"
+                  onClick={handleEnableNotifications}
+                  disabled={pushPending}
+                >
+                  {pushPending ? "Activando..." : "Permitir notificaciones"}
+                </button>
+              ) : null}
               <button
                 type="button"
-                className="push-banner-button"
-                onClick={handleEnableNotifications}
+                className="push-modal-button secondary"
+                onClick={() => setShowPushBanner(false)}
                 disabled={pushPending}
               >
-                {pushPending ? "Activando..." : "Permitir notificaciones"}
+                Ahora no
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="push-banner-button secondary"
-              onClick={() => setShowPushBanner(false)}
-              disabled={pushPending}
-            >
-              Ahora no
-            </button>
+            </div>
           </div>
         </div>
       ) : null}
