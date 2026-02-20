@@ -161,10 +161,29 @@ function HomeContent() {
   const [routeStopsByKey, setRouteStopsByKey] = useState({});
   const [dailyStopStatuses, setDailyStopStatuses] = useState({});
   const userDocUnsubRef = useRef(null);
+  const profileRouteSignature = profile
+    ? [
+        profile?.route,
+        profile?.institutionCode,
+        profile?.institutionAddress,
+        profile?.institutionLat,
+        profile?.institutionLng,
+        profile?.stopAddress,
+        profile?.stopLat,
+        profile?.stopLng,
+        profile?.studentCode,
+        profile?.role,
+        profile?.accountType,
+      ]
+        .map((value) =>
+          value === null || value === undefined ? "" : value.toString().trim()
+        )
+        .join("|")
+    : "";
 
   useEffect(() => {
     profileRef.current = profile;
-  }, [profile]);
+  }, [profileRouteSignature]);
 
   useEffect(() => {
     schoolCoordsRef.current = institutionCoords;
@@ -244,7 +263,7 @@ function HomeContent() {
         }
       });
     };
-  }, [profile]);
+  }, [profileRouteSignature]);
 
   useEffect(() => {
     if (!profile) {
@@ -332,7 +351,7 @@ function HomeContent() {
     );
 
     return () => unsubscribe();
-  }, [profile, routeStopsByKey]);
+  }, [profileRouteSignature, routeStopsByKey]);
 
   const getStopCoords = async (stop) => {
     if (!stop) return null;

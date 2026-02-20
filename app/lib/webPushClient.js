@@ -47,7 +47,12 @@ export const getBrowserNotificationPermission = () => {
   return Notification.permission;
 };
 
-export const setupWebPushForUser = async ({ uid, requestPermission = true }) => {
+export const setupWebPushForUser = async ({
+  uid,
+  requestPermission = true,
+  existingToken = "",
+  existingEnabled = false,
+}) => {
   if (!uid) return { ok: false, reason: "missing-uid" };
   if (typeof window === "undefined") {
     return { ok: false, reason: "no-window" };
@@ -96,6 +101,12 @@ export const setupWebPushForUser = async ({ uid, requestPermission = true }) => 
     return { ok: false, reason: "token-failed" };
   }
 
+  const normalizedExistingToken =
+    typeof existingToken === "string" ? existingToken.trim() : "";
+  if (existingEnabled && normalizedExistingToken && normalizedExistingToken === token) {
+    return { ok: true, token, wrote: false };
+  }
+
   const userRef = doc(db, "users", uid);
   await setDoc(
     userRef,
@@ -113,5 +124,5 @@ export const setupWebPushForUser = async ({ uid, requestPermission = true }) => 
     { merge: true }
   );
 
-  return { ok: true, token };
+  return { ok: true, token, wrote: true };
 };

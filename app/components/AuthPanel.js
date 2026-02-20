@@ -298,6 +298,8 @@ export default function AuthPanel() {
     const syncPushTokenIfPermissionGranted = async () => {
       const uid = user?.uid;
       if (!uid || !userProfile) return;
+      const storedToken = userProfile?.pushNotifications?.web?.token || "";
+      const storedEnabled = Boolean(userProfile?.pushNotifications?.web?.enabled);
       const currentPermission = getBrowserNotificationPermission();
       setPushPermission(currentPermission);
       setShowPushBanner(currentPermission !== "granted");
@@ -306,7 +308,17 @@ export default function AuthPanel() {
         return;
       }
 
-      const result = await setupWebPushForUser({ uid, requestPermission: false });
+      if (storedEnabled && storedToken) {
+        pushSyncRef.current = { uid, token: storedToken };
+        return;
+      }
+
+      const result = await setupWebPushForUser({
+        uid,
+        requestPermission: false,
+        existingToken: storedToken,
+        existingEnabled: storedEnabled,
+      });
       if (cancelled || !result?.ok) return;
 
       if (pushSyncRef.current.uid === uid && pushSyncRef.current.token === result.token) {
@@ -322,8 +334,9 @@ export default function AuthPanel() {
     };
   }, [
     user?.uid,
-    userProfile,
-    userProfile?.uid,
+    userProfile?.pushNotifications?.web?.token,
+    userProfile?.pushNotifications?.web?.enabled,
+    Boolean(userProfile),
   ]);
 
   const handleEnableNotifications = async () => {
@@ -333,7 +346,12 @@ export default function AuthPanel() {
     setPushPending(true);
     setPushMessage("");
     try {
-      const result = await setupWebPushForUser({ uid, requestPermission: true });
+      const result = await setupWebPushForUser({
+        uid,
+        requestPermission: true,
+        existingToken: userProfile?.pushNotifications?.web?.token || "",
+        existingEnabled: Boolean(userProfile?.pushNotifications?.web?.enabled),
+      });
       const currentPermission = getBrowserNotificationPermission();
       setPushPermission(currentPermission);
 
