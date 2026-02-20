@@ -27,6 +27,8 @@ import {
 } from "../lib/sessionClient";
 import {
   getBrowserNotificationPermission,
+  isAppleMobileBrowser,
+  isStandaloneWebApp,
   setupWebPushForUser,
 } from "../lib/webPushClient";
 
@@ -72,6 +74,8 @@ export default function AuthPanel() {
   const [pushPending, setPushPending] = useState(false);
   const [pushPermission, setPushPermission] = useState("default");
   const [showPushBanner, setShowPushBanner] = useState(false);
+  const [appleInstallRequired, setAppleInstallRequired] = useState(false);
+  const [appleInstallGuide, setAppleInstallGuide] = useState(false);
   const panelRef = useRef(null);
   const userDocUnsubRef = useRef(null);
   const heartbeatRef = useRef(null);
@@ -97,6 +101,7 @@ export default function AuthPanel() {
     setShowGooglePasswordConfirm(false);
     setError("");
     setPushMessage("");
+    setAppleInstallGuide(false);
   };
 
   const applyPersistence = async (value) => {
@@ -178,6 +183,8 @@ export default function AuthPanel() {
         setPushPermission("default");
         setPushMessage("");
         setShowPushBanner(false);
+        setAppleInstallRequired(false);
+        setAppleInstallGuide(false);
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
@@ -298,6 +305,17 @@ export default function AuthPanel() {
     const syncPushTokenIfPermissionGranted = async () => {
       const uid = user?.uid;
       if (!uid || !userProfile) return;
+      const isAppleMobile = isAppleMobileBrowser();
+      const isStandalone = isStandaloneWebApp();
+      const needsAppleInstall = isAppleMobile && !isStandalone;
+      setAppleInstallRequired(needsAppleInstall);
+      if (needsAppleInstall) {
+        setPushPermission("unsupported");
+        setShowPushBanner(true);
+        pushSyncRef.current = { uid: "", token: "" };
+        return;
+      }
+
       const storedToken = userProfile?.pushNotifications?.web?.token || "";
       const storedEnabled = Boolean(userProfile?.pushNotifications?.web?.enabled);
       const currentPermission = getBrowserNotificationPermission();
@@ -342,6 +360,11 @@ export default function AuthPanel() {
   const handleEnableNotifications = async () => {
     const uid = user?.uid;
     if (!uid) return;
+    if (appleInstallRequired) {
+      setAppleInstallGuide(true);
+      setShowPushBanner(true);
+      return;
+    }
 
     setPushPending(true);
     setPushMessage("");
@@ -402,6 +425,17 @@ export default function AuthPanel() {
       setOpen(true);
     } finally {
       setPending(false);
+    }
+  };
+
+  const handleAppleWebAppCreated = async () => {
+    setPushPending(true);
+    try {
+      setAppleInstallGuide(false);
+      setShowPushBanner(false);
+      await handleLogout();
+    } finally {
+      setPushPending(false);
     }
   };
 
@@ -1295,35 +1329,92 @@ export default function AuthPanel() {
       {user && showPushBanner ? (
         <div className="push-modal-overlay" role="dialog" aria-modal="true">
           <div className="push-modal" role="status" aria-live="polite">
-            <div className="push-modal-badge">SchoolWays</div>
-            <div className="push-modal-title">Activa tus notificaciones</div>
-            <div className="push-modal-text">
-              {pushUnsupported
-                ? "Tu navegador no soporta push aqui. En iPhone usa Safari y agrega la app a pantalla de inicio."
-                : pushPermissionBlocked
-                  ? "Tienes el permiso bloqueado. Activalo en configuracion del navegador para recibir avisos."
-                  : "Recibe alertas en tiempo real cuando la ruta vaya por ti y cuando ya estes en camino al colegio."}
-            </div>
-            <div className="push-modal-actions">
-              {!pushUnsupported ? (
-                <button
-                  type="button"
-                  className="push-modal-button"
-                  onClick={handleEnableNotifications}
-                  disabled={pushPending}
-                >
-                  {pushPending ? "Activando..." : "Permitir notificaciones"}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="push-modal-button secondary"
-                onClick={() => setShowPushBanner(false)}
-                disabled={pushPending}
-              >
-                Ahora no
-              </button>
-            </div>
+            {appleInstallRequired ? (
+              <>
+                <div className="push-modal-badge">iPhone</div>
+                <div className="push-modal-title">
+                  {appleInstallGuide ? "Crear Web App" : "Instala SchoolWays"}
+                </div>
+                <div className="push-modal-text">
+                  {appleInstallGuide
+                    ? "Sigue estos pasos para instalar y habilitar notificaciones."
+                    : "Para recibir notificaciones en iPhone debes usar la version instalada en pantalla de inicio."}
+                </div>
+                {appleInstallGuide ? (
+                  <ol className="push-modal-steps">
+                    <li>Abre el menu Compartir de Safari.</li>
+                    <li>Toca Agregar a pantalla de inicio.</li>
+                    <li>Confirma el nombre SchoolWays y agrega.</li>
+                  </ol>
+                ) : null}
+                <div className="push-modal-actions">
+                  {appleInstallGuide ? (
+                    <button
+                      type="button"
+                      className="push-modal-button"
+                      onClick={() => {
+                        void handleAppleWebAppCreated();
+                      }}
+                      disabled={pushPending}
+                    >
+                      Ya la cree, cerrar sesion web
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="push-modal-button"
+                      onClick={() => setAppleInstallGuide(true)}
+                      disabled={pushPending}
+                    >
+                      Crear web app
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="push-modal-button secondary"
+                    onClick={() => {
+                      setAppleInstallGuide(false);
+                      setShowPushBanner(false);
+                    }}
+                    disabled={pushPending}
+                  >
+                    Ahora no
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="push-modal-badge">SchoolWays</div>
+                <div className="push-modal-title">Activa tus notificaciones</div>
+                <div className="push-modal-text">
+                  {pushUnsupported
+                    ? "Tu navegador no soporta push aqui. En iPhone usa Safari y agrega la app a pantalla de inicio."
+                    : pushPermissionBlocked
+                      ? "Tienes el permiso bloqueado. Activalo en configuracion del navegador para recibir avisos."
+                      : "Recibe alertas en tiempo real cuando la ruta vaya por ti y cuando ya estes en camino al colegio."}
+                </div>
+                <div className="push-modal-actions">
+                  {!pushUnsupported ? (
+                    <button
+                      type="button"
+                      className="push-modal-button"
+                      onClick={handleEnableNotifications}
+                      disabled={pushPending}
+                    >
+                      {pushPending ? "Activando..." : "Permitir notificaciones"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="push-modal-button secondary"
+                    onClick={() => setShowPushBanner(false)}
+                    disabled={pushPending}
+                  >
+                    Ahora no
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       ) : null}

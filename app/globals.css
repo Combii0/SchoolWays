@@ -61,7 +61,7 @@ a {
 .eta-bubble {
   position: fixed;
   left: 50%;
-  bottom: 60px;
+  bottom: calc(58px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   width: 210px;
   height: 90px;
@@ -348,7 +348,7 @@ a {
 .map-control {
   position: fixed;
   right: max(16px, env(safe-area-inset-right));
-  bottom: calc(84px + env(safe-area-inset-bottom));
+  bottom: calc(90px + env(safe-area-inset-bottom));
   z-index: 25;
   width: 44px;
   height: 44px;
@@ -365,7 +365,7 @@ a {
 
 @media (max-width: 640px) {
   .map-control {
-    bottom: calc(96px + env(safe-area-inset-bottom));
+    bottom: calc(104px + env(safe-area-inset-bottom));
   }
 }
 
@@ -440,13 +440,13 @@ a {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 64px;
+  height: calc(64px + env(safe-area-inset-bottom));
   background: #ffffff;
   border-top: 1px solid rgba(16, 24, 40, 0.08);
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   align-items: center;
-  padding: 6px 8px 10px;
+  padding: 6px 8px calc(10px + env(safe-area-inset-bottom));
   z-index: 20;
 }
 
@@ -490,9 +490,9 @@ a {
 
 .auth-panel {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  z-index: 12;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 30;
 }
 
 .auth-avatar-button {
@@ -803,7 +803,10 @@ a {
   backdrop-filter: blur(5px);
   display: grid;
   place-items: center;
-  padding: 18px;
+  padding: max(18px, env(safe-area-inset-top))
+    max(18px, env(safe-area-inset-right))
+    max(18px, env(safe-area-inset-bottom))
+    max(18px, env(safe-area-inset-left));
 }
 
 .push-modal {
@@ -846,6 +849,15 @@ a {
   gap: 8px;
 }
 
+.push-modal-steps {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: #334155;
+  font-size: 12px;
+}
+
 .push-modal-button {
   border: none;
   border-radius: 999px;
@@ -877,9 +889,11 @@ a {
 .push-island {
   position: fixed;
   top: calc(14px + env(safe-area-inset-top));
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(92vw, 520px);
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  width: auto;
+  max-width: 520px;
+  margin: 0 auto;
   z-index: 46;
   border-radius: 18px;
   background: rgba(7, 12, 22, 0.94);
@@ -916,9 +930,7 @@ a {
   font-size: 12px;
   color: #cbd5e1;
   line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
 }
 
 .push-island-close {
@@ -929,6 +941,17 @@ a {
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
+}
+
+@supports (-webkit-touch-callout: none) {
+  .auth-panel {
+    top: max(14px, env(safe-area-inset-top));
+    right: max(14px, env(safe-area-inset-right));
+  }
+
+  .eta-bubble {
+    bottom: calc(64px + env(safe-area-inset-bottom));
+  }
 }
 
 .auth-overlay--locked {

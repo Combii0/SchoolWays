@@ -4,6 +4,9 @@ import { app, db } from "./firebaseClient";
 
 let onMessageBound = false;
 
+const getUserAgent = () =>
+  typeof navigator === "undefined" ? "" : navigator.userAgent || "";
+
 const registerServiceWorker = async () => {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
     return null;
@@ -46,6 +49,21 @@ export const getBrowserNotificationPermission = () => {
     return "unsupported";
   }
   return Notification.permission;
+};
+
+export const isAppleMobileBrowser = () => {
+  const ua = getUserAgent();
+  if (!ua) return false;
+  return /iPhone|iPad|iPod/i.test(ua);
+};
+
+export const isStandaloneWebApp = () => {
+  if (typeof window === "undefined") return false;
+  const byMatchMedia =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(display-mode: standalone)").matches;
+  const byNavigator = typeof navigator !== "undefined" && navigator.standalone === true;
+  return Boolean(byMatchMedia || byNavigator);
 };
 
 export const setupWebPushForUser = async ({
