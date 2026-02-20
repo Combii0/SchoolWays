@@ -26,24 +26,11 @@ import {
   SESSION_HEARTBEAT_MS,
 } from "../lib/sessionClient";
 import {
-  clearWebPushTokenForUser,
-  setupStudentWebPush,
+  getBrowserNotificationPermission,
+  setupWebPushForUser,
 } from "../lib/webPushClient";
 
 const COOKIE_KEY = "schoolways_cookie_consent";
-const toLowerText = (value) =>
-  value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
-const isMonitorProfile = (profile) => {
-  const role = toLowerText(profile?.role);
-  const accountType = toLowerText(profile?.accountType);
-  return (
-    role === "monitor" ||
-    role === "monitora" ||
-    accountType === "monitor" ||
-    accountType === "monitora"
-  );
-};
-
 const getCookie = (name) => {
   if (typeof document === "undefined") return "";
   const match = document.cookie.match(new RegExp(`(^| )${name}=([^;]+)`));
@@ -81,6 +68,9 @@ export default function AuthPanel() {
     useState(false);
   const [error, setError] = useState("");
   const [cookieConsent, setCookieConsent] = useState("");
+  const [pushMessage, setPushMessage] = useState("");
+  const [pushPending, setPushPending] = useState(false);
+  const [pushPermission, setPushPermission] = useState("default");
   const panelRef = useRef(null);
   const userDocUnsubRef = useRef(null);
   const heartbeatRef = useRef(null);
@@ -105,6 +95,7 @@ export default function AuthPanel() {
     setShowGooglePassword(false);
     setShowGooglePasswordConfirm(false);
     setError("");
+    setPushMessage("");
   };
 
   const applyPersistence = async (value) => {
@@ -183,6 +174,8 @@ export default function AuthPanel() {
         const forcedError = forcedAuthErrorRef.current;
         forcedAuthErrorRef.current = "";
         pushSyncRef.current = { uid: "", token: "" };
+        setPushPermission("default");
+        setPushMessage("");
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
@@ -300,20 +293,17 @@ export default function AuthPanel() {
   useEffect(() => {
     let cancelled = false;
 
-    const syncPush = async () => {
+    const syncPushTokenIfPermissionGranted = async () => {
       const uid = user?.uid;
       if (!uid || !userProfile) return;
-
-      if (isMonitorProfile(userProfile)) {
-        if (pushSyncRef.current.uid === uid) {
-          return;
-        }
-        pushSyncRef.current = { uid, token: "" };
-        await clearWebPushTokenForUser(uid).catch(() => null);
+      const currentPermission = getBrowserNotificationPermission();
+      setPushPermission(currentPermission);
+      if (currentPermission !== "granted") {
+        pushSyncRef.current = { uid: "", token: "" };
         return;
       }
 
-      const result = await setupStudentWebPush({ uid, profile: userProfile });
+      const result = await setupWebPushForUser({ uid, requestPermission: false });
       if (cancelled || !result?.ok) return;
 
       if (pushSyncRef.current.uid === uid && pushSyncRef.current.token === result.token) {
@@ -322,7 +312,7 @@ export default function AuthPanel() {
       pushSyncRef.current = { uid, token: result.token };
     };
 
-    void syncPush();
+    void syncPushTokenIfPermissionGranted();
 
     return () => {
       cancelled = true;
@@ -330,10 +320,48 @@ export default function AuthPanel() {
   }, [
     user?.uid,
     userProfile,
-    userProfile?.role,
-    userProfile?.accountType,
-    userProfile?.studentCode,
+    userProfile?.uid,
   ]);
+
+  const handleEnableNotifications = async () => {
+    const uid = user?.uid;
+    if (!uid) return;
+
+    setPushPending(true);
+    setPushMessage("");
+    try {
+      const result = await setupWebPushForUser({ uid, requestPermission: true });
+      const currentPermission = getBrowserNotificationPermission();
+      setPushPermission(currentPermission);
+
+      if (result?.ok) {
+        setPushMessage("Notificaciones activadas correctamente.");
+        pushSyncRef.current = { uid, token: result.token || "" };
+        return;
+      }
+
+      if (result?.reason === "permission-denied") {
+        setPushMessage(
+          "Permiso bloqueado. Activalo en la configuracion del navegador."
+        );
+        return;
+      }
+      if (result?.reason === "unsupported") {
+        setPushMessage(
+          "Este navegador no soporta push web aqui. En iPhone usa Safari y agrega la app a pantalla de inicio."
+        );
+        return;
+      }
+      if (result?.reason === "missing-vapid") {
+        setPushMessage("Falta configurar NEXT_PUBLIC_FIREBASE_VAPID_KEY en Vercel.");
+        return;
+      }
+
+      setPushMessage("No se pudieron activar las notificaciones en este momento.");
+    } finally {
+      setPushPending(false);
+    }
+  };
 
   const handleLogout = async () => {
     setPending(true);
@@ -568,7 +596,27 @@ export default function AuthPanel() {
                     Ruta: {userProfile.route}
                   </span>
                 ) : null}
+                <span className="auth-meta-line">
+                  Notificaciones:{" "}
+                  {pushPermission === "granted"
+                    ? "activas"
+                    : pushPermission === "denied"
+                      ? "bloqueadas"
+                      : "pendientes"}
+                </span>
               </div>
+              {pushPermission !== "granted" ? (
+                <button
+                  type="button"
+                  className="auth-menu-action"
+                  onClick={handleEnableNotifications}
+                  disabled={pending || pushPending}
+                  role="menuitem"
+                >
+                  {pushPending ? "Activando..." : "Activar notificaciones"}
+                </button>
+              ) : null}
+              {pushMessage ? <div className="auth-meta-line">{pushMessage}</div> : null}
               <button
                 type="button"
                 className="auth-menu-action"

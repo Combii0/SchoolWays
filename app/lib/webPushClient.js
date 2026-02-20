@@ -1,22 +1,8 @@
-import { deleteField, doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { app, db } from "./firebaseClient";
 
 let onMessageBound = false;
-
-const toLowerText = (value) =>
-  value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
-
-const isMonitorProfile = (profile) => {
-  const role = toLowerText(profile?.role);
-  const accountType = toLowerText(profile?.accountType);
-  return (
-    role === "monitor" ||
-    role === "monitora" ||
-    accountType === "monitor" ||
-    accountType === "monitora"
-  );
-};
 
 const registerServiceWorker = async () => {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
@@ -54,29 +40,15 @@ const bindForegroundNotifications = (messaging) => {
   });
 };
 
-export const clearWebPushTokenForUser = async (uid) => {
-  if (!uid) return;
-  const userRef = doc(db, "users", uid);
-  await setDoc(
-    userRef,
-    {
-      pushNotifications: {
-        web: {
-          token: deleteField(),
-          enabled: false,
-          updatedAt: serverTimestamp(),
-        },
-      },
-    },
-    { merge: true }
-  );
+export const getBrowserNotificationPermission = () => {
+  if (typeof window === "undefined" || typeof Notification === "undefined") {
+    return "unsupported";
+  }
+  return Notification.permission;
 };
 
-export const setupStudentWebPush = async ({ uid, profile }) => {
-  if (!uid || !profile || isMonitorProfile(profile)) {
-    return { ok: false, reason: "not-student" };
-  }
-
+export const setupWebPushForUser = async ({ uid, requestPermission = true }) => {
+  if (!uid) return { ok: false, reason: "missing-uid" };
   if (typeof window === "undefined") {
     return { ok: false, reason: "no-window" };
   }
@@ -96,7 +68,7 @@ export const setupStudentWebPush = async ({ uid, profile }) => {
     return { ok: false, reason: "sw-failed" };
   }
 
-  if (Notification.permission === "default") {
+  if (getBrowserNotificationPermission() === "default" && requestPermission) {
     try {
       await Notification.requestPermission();
     } catch (error) {
@@ -104,7 +76,11 @@ export const setupStudentWebPush = async ({ uid, profile }) => {
     }
   }
 
-  if (Notification.permission !== "granted") {
+  if (getBrowserNotificationPermission() === "default" && !requestPermission) {
+    return { ok: false, reason: "permission-pending" };
+  }
+
+  if (getBrowserNotificationPermission() !== "granted") {
     return { ok: false, reason: "permission-denied" };
   }
 
