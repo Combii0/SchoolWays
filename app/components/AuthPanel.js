@@ -1275,25 +1275,34 @@ export default function AuthPanel() {
       ) : null}
 
       {user && showPushBanner ? (
-        <div className="cookie-banner" style={{ bottom: cookieConsent ? 16 : 92 }}>
-          <div>
+        <div className="push-banner" role="status" aria-live="polite">
+          <div className="push-banner-title">Notificaciones de Ruta</div>
+          <div className="push-banner-text">
             {pushUnsupported
-              ? "Tu navegador no soporta push web en este modo. En iPhone usa Safari y agrega la app a pantalla de inicio."
+              ? "Tu navegador no soporta push aqui. En iPhone usa Safari y agrega la app a pantalla de inicio."
               : pushPermissionBlocked
-                ? "Notificaciones bloqueadas. Activalas en la configuracion del navegador para recibir avisos de ruta."
+                ? "Tienes el permiso bloqueado. Activalo en configuracion del navegador para recibir avisos."
                 : "Activa notificaciones para recibir alertas de ruta en segundo plano."}
           </div>
-          <div className="cookie-actions">
+          <div className="push-banner-actions">
             {!pushUnsupported ? (
               <button
                 type="button"
-                className="cookie-button"
+                className="push-banner-button"
                 onClick={handleEnableNotifications}
                 disabled={pushPending}
               >
-                {pushPending ? "Activando..." : "Activar notificaciones"}
+                {pushPending ? "Activando..." : "Permitir notificaciones"}
               </button>
             ) : null}
+            <button
+              type="button"
+              className="push-banner-button secondary"
+              onClick={() => setShowPushBanner(false)}
+              disabled={pushPending}
+            >
+              Ahora no
+            </button>
           </div>
         </div>
       ) : null}
