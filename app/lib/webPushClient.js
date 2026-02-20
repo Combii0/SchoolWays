@@ -30,10 +30,11 @@ const bindForegroundNotifications = (messaging) => {
     const body = payload?.data?.body || "Tienes una nueva notificacion de ruta.";
 
     try {
-      new Notification(title, {
-        body,
-        icon: "/logo.svg",
-      });
+      window.dispatchEvent(
+        new CustomEvent("schoolways:push-foreground", {
+          detail: { title, body },
+        })
+      );
     } catch (error) {
       // ignore foreground notification errors
     }

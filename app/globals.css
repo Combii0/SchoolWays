@@ -874,6 +874,63 @@ a {
   box-shadow: none;
 }
 
+.push-island {
+  position: fixed;
+  top: calc(14px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92vw, 520px);
+  z-index: 46;
+  border-radius: 18px;
+  background: rgba(7, 12, 22, 0.94);
+  color: #f8fafc;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 18px 34px rgba(2, 6, 23, 0.34);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.push-island-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.18);
+  display: grid;
+  place-items: center;
+}
+
+.push-island-copy {
+  min-width: 0;
+}
+
+.push-island-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.push-island-body {
+  font-size: 12px;
+  color: #cbd5e1;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.push-island-close {
+  border: none;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
 .auth-overlay--locked {
   z-index: 40;
 }

@@ -1,5 +1,6 @@
 import "./globals.css";
 import FooterNav from "./components/FooterNav";
+import ForegroundPushIsland from "./components/ForegroundPushIsland";
 
 export const metadata = {
   title: "SchoolWays",
@@ -11,6 +12,7 @@ export default function RootLayout({ children }) {
     <html lang="es">
       <body>
         {children}
+        <ForegroundPushIsland />
         <FooterNav />
       </body>
     </html>

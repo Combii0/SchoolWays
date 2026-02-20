@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
+  deleteDoc,
   doc,
   getDocs,
   onSnapshot,
@@ -365,6 +366,10 @@ export default function RecorridoPage() {
     const syncResults = await Promise.allSettled(
       students.map(async (student) => {
         const attendanceRef = doc(db, "users", student.uid, "asistencias", dateKey);
+        if (!status) {
+          await deleteDoc(attendanceRef);
+          return;
+        }
         await setDoc(
           attendanceRef,
           {
@@ -404,58 +409,73 @@ export default function RecorridoPage() {
       const dateKey = getServiceDateKey();
       const monitorUid = auth.currentUser?.uid || null;
       const dailyStopRef = doc(db, "routes", routeId, "daily", dateKey, "stops", stopKey);
+      const isClearing = !status;
 
-      await setDoc(
-        dailyStopRef,
-        {
-          stopId: stopKey,
-          stopTitle: stop.title || null,
-          stopAddress: stop.address || null,
-          status,
-          inasistencia: status === STOP_STATUS.MISSED_BUS,
-          route: profile.route || null,
-          institutionCode: profile.institutionCode || null,
-          monitorUid,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      if (isClearing) {
+        await deleteDoc(dailyStopRef);
+      } else {
+        await setDoc(
+          dailyStopRef,
+          {
+            stopId: stopKey,
+            stopTitle: stop.title || null,
+            stopAddress: stop.address || null,
+            status,
+            inasistencia: status === STOP_STATUS.MISSED_BUS,
+            route: profile.route || null,
+            institutionCode: profile.institutionCode || null,
+            monitorUid,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
 
       const excluded = isStopAbsentStatus(status);
-      setDailyStopStatuses((prev) => ({
-        ...prev,
-        [stopKey]: {
-          ...(prev[stopKey] || {}),
-          id: stopKey,
-          status,
-          inasistencia: excluded,
-          updatedAt: new Date(),
-          monitorUid,
-        },
-      }));
+      setDailyStopStatuses((prev) => {
+        if (isClearing) {
+          if (!prev[stopKey]) return prev;
+          const next = { ...prev };
+          delete next[stopKey];
+          return next;
+        }
+        return {
+          ...prev,
+          [stopKey]: {
+            ...(prev[stopKey] || {}),
+            id: stopKey,
+            status,
+            inasistencia: excluded,
+            updatedAt: new Date(),
+            monitorUid,
+          },
+        };
+      });
       const nextRows = stopEtas.map((item) =>
         item.key === stopKey
           ? {
               ...item,
-              status,
-              inasistencia: excluded,
-              excluded,
+              status: isClearing ? null : status,
+              inasistencia: isClearing ? false : excluded,
+              excluded: isClearing ? false : excluded,
             }
           : item
       );
       setStopEtas(nextRows);
 
       await syncStudentDailyRecord({ stop, status });
-      await syncRoutePush({
-        eventType: "stop_status_update",
-        changedStop: {
-          key: stopKey,
-          title: stop.title || null,
-          address: stop.address || null,
-          status,
-        },
-        stopsOverride: nextRows,
-      });
+      if (!isClearing) {
+        await syncRoutePush({
+          eventType: "stop_status_update",
+          changedStop: {
+            key: stopKey,
+            title: stop.title || null,
+            address: stop.address || null,
+            status,
+          },
+          stopsOverride: nextRows,
+        });
+      }
 
       setEditingStopKey("");
     } catch (error) {
@@ -1091,6 +1111,20 @@ export default function RecorridoPage() {
                       <button
                         type="button"
                         className="route-item-button secondary"
+                        disabled={isSaving}
+                        onClick={() => {
+                          void handleMarkStop(stop, null);
+                        }}
+                      >
+                        Desmarcar estado
+                      </button>
+                    ) : null}
+
+                    {isMonitor && isEditing ? (
+                      <button
+                        type="button"
+                        className="route-item-button secondary"
+                        disabled={isSaving}
                         onClick={() => setEditingStopKey("")}
                       >
                         Cancelar edicion
