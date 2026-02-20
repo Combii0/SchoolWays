@@ -295,7 +295,7 @@ export default function RecorridoPage() {
       const idToken = await currentUser.getIdToken();
       if (!idToken) return;
 
-      await fetch("/api/push/sync", {
+      const response = await fetch("/api/push/sync", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -311,8 +311,18 @@ export default function RecorridoPage() {
           changedStop,
         }),
       });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (eventType === "stop_status_update") {
+          setSavingError("Se guardo el paradero, pero fallo el envio de notificaciones.");
+        }
+        console.error("Push sync failed", payload);
+      }
     } catch (error) {
-      // ignore push sync errors to avoid interrupting route flow
+      if (eventType === "stop_status_update") {
+        setSavingError("Se guardo el paradero, pero fallo el envio de notificaciones.");
+      }
+      console.error("Push sync request failed", error);
     } finally {
       pushSyncRef.current = {
         ...pushSyncRef.current,
@@ -423,18 +433,17 @@ export default function RecorridoPage() {
           monitorUid,
         },
       }));
-      setStopEtas((prev) =>
-        prev.map((item) =>
-          item.key === stopKey
-            ? {
-                ...item,
-                status,
-                inasistencia: excluded,
-                excluded,
-              }
-            : item
-        )
+      const nextRows = stopEtas.map((item) =>
+        item.key === stopKey
+          ? {
+              ...item,
+              status,
+              inasistencia: excluded,
+              excluded,
+            }
+          : item
       );
+      setStopEtas(nextRows);
 
       await syncStudentDailyRecord({ stop, status });
       await syncRoutePush({
@@ -445,6 +454,7 @@ export default function RecorridoPage() {
           address: stop.address || null,
           status,
         },
+        stopsOverride: nextRows,
       });
 
       setEditingStopKey("");

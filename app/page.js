@@ -861,7 +861,7 @@ function HomeContent() {
       const idToken = await currentUser.getIdToken();
       if (!idToken) return;
 
-      await fetch("/api/push/sync", {
+      const response = await fetch("/api/push/sync", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -876,8 +876,12 @@ function HomeContent() {
           stops,
         }),
       });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        console.error("Monitor ETA push sync failed", payload);
+      }
     } catch (error) {
-      // ignore push sync errors to avoid interrupting ETA rendering
+      console.error("Monitor ETA push sync request failed", error);
     } finally {
       monitorPushSyncRef.current = {
         ...monitorPushSyncRef.current,

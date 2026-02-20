@@ -71,6 +71,7 @@ export default function AuthPanel() {
   const [pushMessage, setPushMessage] = useState("");
   const [pushPending, setPushPending] = useState(false);
   const [pushPermission, setPushPermission] = useState("default");
+  const [showPushBanner, setShowPushBanner] = useState(false);
   const panelRef = useRef(null);
   const userDocUnsubRef = useRef(null);
   const heartbeatRef = useRef(null);
@@ -176,6 +177,7 @@ export default function AuthPanel() {
         pushSyncRef.current = { uid: "", token: "" };
         setPushPermission("default");
         setPushMessage("");
+        setShowPushBanner(false);
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
@@ -298,6 +300,7 @@ export default function AuthPanel() {
       if (!uid || !userProfile) return;
       const currentPermission = getBrowserNotificationPermission();
       setPushPermission(currentPermission);
+      setShowPushBanner(currentPermission !== "granted");
       if (currentPermission !== "granted") {
         pushSyncRef.current = { uid: "", token: "" };
         return;
@@ -336,6 +339,7 @@ export default function AuthPanel() {
 
       if (result?.ok) {
         setPushMessage("Notificaciones activadas correctamente.");
+        setShowPushBanner(false);
         pushSyncRef.current = { uid, token: result.token || "" };
         return;
       }
@@ -546,6 +550,9 @@ export default function AuthPanel() {
 
   const displayName =
     userProfile?.studentName || user?.displayName || "Usuario";
+
+  const pushUnsupported = pushPermission === "unsupported";
+  const pushPermissionBlocked = pushPermission === "denied";
 
   return (
     <div className="auth-panel" ref={panelRef}>
@@ -1263,6 +1270,30 @@ export default function AuthPanel() {
             >
               Aceptar
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {user && showPushBanner ? (
+        <div className="cookie-banner" style={{ bottom: cookieConsent ? 16 : 92 }}>
+          <div>
+            {pushUnsupported
+              ? "Tu navegador no soporta push web en este modo. En iPhone usa Safari y agrega la app a pantalla de inicio."
+              : pushPermissionBlocked
+                ? "Notificaciones bloqueadas. Activalas en la configuracion del navegador para recibir avisos de ruta."
+                : "Activa notificaciones para recibir alertas de ruta en segundo plano."}
+          </div>
+          <div className="cookie-actions">
+            {!pushUnsupported ? (
+              <button
+                type="button"
+                className="cookie-button"
+                onClick={handleEnableNotifications}
+                disabled={pushPending}
+              >
+                {pushPending ? "Activando..." : "Activar notificaciones"}
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

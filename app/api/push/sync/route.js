@@ -366,6 +366,18 @@ const buildPickedUpMessage = (name) => {
   return `${name} ya esta en la ruta; En camino al colegio! :)`;
 };
 
+const isSameStop = (a, b) => {
+  if (!a || !b) return false;
+  if (a.key && b.key && a.key === b.key) return true;
+  const addressA = normalizeMatchText(a.address);
+  const addressB = normalizeMatchText(b.address);
+  if (addressA && addressB && addressA === addressB) return true;
+  const titleA = normalizeMatchText(a.title);
+  const titleB = normalizeMatchText(b.title);
+  if (titleA && titleB && titleA === titleB) return true;
+  return false;
+};
+
 export async function POST(request) {
   const token = readBearerToken(request);
   if (!token) {
@@ -534,7 +546,7 @@ export async function POST(request) {
       changedStop &&
       changedStopStatus === STOP_STATUS.BOARDED
     ) {
-      const sameStop = studentStop.key === changedStop.key;
+      const sameStop = isSameStop(studentStop, changedStop);
       if (sameStop) {
         if (!state.pickedUpSent) {
           message = buildPickedUpMessage(name);
