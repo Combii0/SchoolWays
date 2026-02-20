@@ -1,5 +1,33 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Web Push Notifications (Students)
+
+This project now supports automatic push notifications for student accounts, including:
+
+- Remaining stops after each pickup event.
+- 15-minute and 5-minute ETA alerts.
+- Pickup confirmation when the monitor marks the student's stop as boarded.
+
+### Required environment variables
+
+Add these variables to `.env.local`:
+
+```bash
+# Web Push (client)
+NEXT_PUBLIC_FIREBASE_VAPID_KEY=your_web_push_certificate_key_pair
+
+# Firebase Admin (server - required for /api/push/sync)
+FIREBASE_ADMIN_PROJECT_ID=your_project_id
+FIREBASE_ADMIN_CLIENT_EMAIL=your_service_account_client_email
+FIREBASE_ADMIN_PRIVATE_KEY=\"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n\"
+```
+
+Notes:
+
+- Push registration is only enabled for non-monitor (student) accounts.
+- `FIREBASE_ADMIN_PRIVATE_KEY` must keep escaped `\\n` line breaks in `.env.local`.
+- The service worker is served from `/sw/firebase-messaging`.
+
 ## Getting Started
 
 First, run the development server:

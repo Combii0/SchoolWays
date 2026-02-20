@@ -17,8 +17,32 @@ import {
 } from "firebase/auth";
 import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebaseClient";
+import {
+  claimSingleDeviceSession,
+  isSessionOwnedByCurrentDevice,
+  isSessionStale,
+  keepSessionAlive,
+  releaseSingleDeviceSession,
+  SESSION_HEARTBEAT_MS,
+} from "../lib/sessionClient";
+import {
+  clearWebPushTokenForUser,
+  setupStudentWebPush,
+} from "../lib/webPushClient";
 
 const COOKIE_KEY = "schoolways_cookie_consent";
+const toLowerText = (value) =>
+  value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
+const isMonitorProfile = (profile) => {
+  const role = toLowerText(profile?.role);
+  const accountType = toLowerText(profile?.accountType);
+  return (
+    role === "monitor" ||
+    role === "monitora" ||
+    accountType === "monitor" ||
+    accountType === "monitora"
+  );
+};
 
 const getCookie = (name) => {
   if (typeof document === "undefined") return "";
@@ -59,6 +83,9 @@ export default function AuthPanel() {
   const [cookieConsent, setCookieConsent] = useState("");
   const panelRef = useRef(null);
   const userDocUnsubRef = useRef(null);
+  const heartbeatRef = useRef(null);
+  const forcedAuthErrorRef = useRef("");
+  const pushSyncRef = useRef({ uid: "", token: "" });
 
   const resetModal = () => {
     setView("login");
@@ -153,16 +180,35 @@ export default function AuthPanel() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
+        const forcedError = forcedAuthErrorRef.current;
+        forcedAuthErrorRef.current = "";
+        pushSyncRef.current = { uid: "", token: "" };
+        if (heartbeatRef.current) {
+          clearInterval(heartbeatRef.current);
+          heartbeatRef.current = null;
+        }
         if (userDocUnsubRef.current) {
           userDocUnsubRef.current();
           userDocUnsubRef.current = null;
         }
         setUserProfile(null);
         resetModal();
+        if (forcedError) {
+          setError(forcedError);
+        }
         setOpen(true);
         return;
       }
       setOpen(false);
+      setError("");
+
+      const sessionClaim = await claimSingleDeviceSession(db, currentUser.uid);
+      if (!sessionClaim.ok) {
+        forcedAuthErrorRef.current =
+          "Esta cuenta ya está abierta en otro dispositivo. Cierra esa sesión para entrar aquí.";
+        await signOut(auth);
+        return;
+      }
 
       const userRef = doc(db, "users", currentUser.uid);
       const basePayload = {
@@ -174,12 +220,36 @@ export default function AuthPanel() {
       };
       await setDoc(userRef, basePayload, { merge: true });
 
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+      }
+      heartbeatRef.current = setInterval(() => {
+        void keepSessionAlive(db, currentUser.uid);
+      }, SESSION_HEARTBEAT_MS);
+
       if (userDocUnsubRef.current) {
         userDocUnsubRef.current();
       }
 
       userDocUnsubRef.current = onSnapshot(userRef, async (snap) => {
         let data = snap.exists() ? snap.data() : null;
+        const activeSession = data?.activeSession || null;
+        const sessionOwned =
+          !activeSession ||
+          isSessionOwnedByCurrentDevice(activeSession) ||
+          isSessionStale(activeSession);
+
+        if (!sessionOwned) {
+          forcedAuthErrorRef.current =
+            "Tu sesión se abrió en otro dispositivo y se cerró aquí.";
+          if (heartbeatRef.current) {
+            clearInterval(heartbeatRef.current);
+            heartbeatRef.current = null;
+          }
+          await signOut(auth);
+          return;
+        }
+
         if (data?.studentCode && (!data.route || !data.institutionName)) {
           try {
             const codeRef = doc(db, "studentCodes", data.studentCode);
@@ -205,6 +275,10 @@ export default function AuthPanel() {
     });
     return () => {
       unsubscribe();
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
       if (userDocUnsubRef.current) {
         userDocUnsubRef.current();
         userDocUnsubRef.current = null;
@@ -223,10 +297,56 @@ export default function AuthPanel() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [open, user]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncPush = async () => {
+      const uid = user?.uid;
+      if (!uid || !userProfile) return;
+
+      if (isMonitorProfile(userProfile)) {
+        if (pushSyncRef.current.uid === uid) {
+          return;
+        }
+        pushSyncRef.current = { uid, token: "" };
+        await clearWebPushTokenForUser(uid).catch(() => null);
+        return;
+      }
+
+      const result = await setupStudentWebPush({ uid, profile: userProfile });
+      if (cancelled || !result?.ok) return;
+
+      if (pushSyncRef.current.uid === uid && pushSyncRef.current.token === result.token) {
+        return;
+      }
+      pushSyncRef.current = { uid, token: result.token };
+    };
+
+    void syncPush();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    user?.uid,
+    userProfile,
+    userProfile?.role,
+    userProfile?.accountType,
+    userProfile?.studentCode,
+  ]);
+
   const handleLogout = async () => {
     setPending(true);
     setError("");
     try {
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        try {
+          await releaseSingleDeviceSession(db, uid);
+        } catch (err) {
+          // ignore lock release errors and continue logout
+        }
+      }
       await signOut(auth);
       resetModal();
       setOpen(true);

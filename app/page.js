@@ -3,9 +3,28 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+} from "firebase/firestore";
 import AuthPanel from "./components/AuthPanel";
 import { auth, db } from "./lib/firebaseClient";
+import { geocodeAddressToCoords } from "./lib/geocodeClient";
+import {
+  getRouteId,
+  loadRouteStopsForProfile,
+  resolveRouteKey as resolveRouteKeyFromStops,
+} from "./lib/routeStops";
+import {
+  createStopStatusMap,
+  getServiceDateKey,
+  isStopAbsentStatus,
+  normalizeStopKey,
+} from "./lib/routeDailyStatus";
 
 const BOGOTA = { lat: 4.711, lng: -74.0721 };
 
@@ -19,32 +38,12 @@ const ZOOM_NEAR = 16;
 const ZOOM_RESET = 15;
 const MAX_FIT_ZOOM = 17;
 const SHOW_SCHOOL_MARKER = false;
-const ROUTE_STOPS = {
-  "L1kj2HG3fd4SA5:ruta 1": [
-    {
-      title: "Calle 96 #45a 40",
-      address: "Calle 96 #45a 40, Bogotá, Colombia",
-      coords: { lat: 4.6851812, lng: -74.058837 },
-    },
-    {
-      title: "Cafam La Floresta",
-      address: "Cafam La Floresta, Bogotá, Colombia",
-      coords: { lat: 4.68633, lng: -74.07406 },
-    },
-    {
-      title: "Carrera 50a #122 - 90",
-      address: "Carrera 50a #122 - 90, Bogotá, Colombia",
-      coords: null,
-    },
-    {
-      title: "Unicentro",
-      address: "Unicentro, Bogotá, Colombia",
-      coords: { lat: 4.7022, lng: -74.0415 },
-    },
-  ],
-};
-
-const getRouteKeys = () => Object.keys(ROUTE_STOPS);
+const STOP_REACHED_METERS = 180;
+const ROUTE_REFRESH_INTERVAL_MS = 9000;
+const ROUTE_GRADIENT_START = { r: 113, g: 210, b: 255 };
+const ROUTE_GRADIENT_END = { r: 34, g: 232, b: 188 };
+const MAX_GRADIENT_SEGMENTS = 96;
+const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
 const toLowerText = (value) =>
   value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
 
@@ -119,18 +118,28 @@ function HomeContent() {
   const userMarkerRef = useRef(null);
   const accuracyCircleRef = useRef(null);
   const watchIdRef = useRef(null);
+  const hasActiveLocationWatchRef = useRef(false);
+  const lastLocationRequestAtRef = useRef(0);
+  const locationErrorCountRef = useRef(0);
+  const locationRetryAfterRef = useRef(0);
   const hasCenteredRef = useRef(false);
   const lastPositionRef = useRef(null);
   const lastUploadRef = useRef(0);
   const profileRef = useRef(null);
   const geocoderRef = useRef(null);
-  const stopMarkerRef = useRef(null);
   const schoolMarkerRef = useRef(null);
   const routeMarkersRef = useRef([]);
-  const routePolylineRef = useRef(null);
+  const resolvedRouteStopsRef = useRef([]);
+  const schoolCoordsRef = useRef(null);
+  const schoolAddressRef = useRef(null);
+  const completedStopsRef = useRef(new Set());
+  const studentPickedUpRef = useRef(false);
+  const routePolylineRef = useRef([]);
   const routeKeyRef = useRef(null);
-  const etaLastFetchRef = useRef(0);
-  const etaKeyRef = useRef(null);
+  const routeRefreshRef = useRef({ at: 0, signature: "" });
+  const monitorPushSyncRef = useRef({ at: 0, signature: "", inFlight: false });
+  const geocodedStopsRef = useRef(new Map());
+  const geocodingStopsRef = useRef(new Map());
   const lastStopAddressRef = useRef(null);
   const lastSchoolAddressRef = useRef(null);
   const stopReadyRef = useRef(false);
@@ -148,6 +157,9 @@ function HomeContent() {
   const [mapReady, setMapReady] = useState(false);
   const [etaDistanceKm, setEtaDistanceKm] = useState(null);
   const [etaMinutes, setEtaMinutes] = useState(null);
+  const [etaTitle, setEtaTitle] = useState("Llegada");
+  const [routeStopsByKey, setRouteStopsByKey] = useState({});
+  const [dailyStopStatuses, setDailyStopStatuses] = useState({});
   const userDocUnsubRef = useRef(null);
 
   useEffect(() => {
@@ -155,13 +167,104 @@ function HomeContent() {
   }, [profile]);
 
   useEffect(() => {
+    schoolCoordsRef.current = institutionCoords;
+  }, [institutionCoords]);
+
+  useEffect(() => {
+    schoolAddressRef.current = institutionAddress;
+  }, [institutionAddress]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribers = [];
+
+    const loadRouteStops = async () => {
+      if (!profile) {
+        setRouteStopsByKey({});
+        return null;
+      }
+
+      const loadedRoute = await loadRouteStopsForProfile(db, profile);
+      if (cancelled) return;
+
+      if (loadedRoute?.routeKey && Array.isArray(loadedRoute.stops)) {
+        setRouteStopsByKey({ [loadedRoute.routeKey]: loadedRoute.stops });
+        return loadedRoute;
+      }
+
+      setRouteStopsByKey({});
+      return null;
+    };
+
+    const subscribeToRouteChanges = (loadedRoute) => {
+      if (!loadedRoute?.sourcePath) return;
+      const routePath = loadedRoute.sourcePath.split("/").filter(Boolean);
+      if (routePath.length < 2) return;
+
+      const refresh = () => {
+        void loadRouteStops();
+      };
+
+      try {
+        unsubscribers.push(onSnapshot(doc(db, ...routePath), refresh, () => null));
+      } catch (error) {
+        // ignore invalid route path subscription
+      }
+
+      ROUTE_STOPS_SUBCOLLECTIONS.forEach((collectionName) => {
+        try {
+          unsubscribers.push(
+            onSnapshot(
+              collection(db, ...routePath, collectionName),
+              refresh,
+              () => null
+            )
+          );
+        } catch (error) {
+          // ignore missing subcollection subscriptions
+        }
+      });
+    };
+
+    const initRouteStops = async () => {
+      const loadedRoute = await loadRouteStops();
+      if (cancelled) return;
+      subscribeToRouteChanges(loadedRoute);
+    };
+
+    void initRouteStops();
+
+    return () => {
+      cancelled = true;
+      unsubscribers.forEach((unsubscribe) => {
+        try {
+          unsubscribe();
+        } catch (error) {
+          // ignore
+        }
+      });
+    };
+  }, [profile]);
+
+  useEffect(() => {
     if (!profile) {
       setMarkersLoading(false);
+      setEtaMinutes(null);
+      setEtaDistanceKm(null);
+      setEtaTitle("Llegada");
+      setDailyStopStatuses({});
       stopReadyRef.current = false;
       schoolReadyRef.current = !SHOW_SCHOOL_MARKER;
       lastStopAddressRef.current = null;
       lastSchoolAddressRef.current = null;
       hasFitRef.current = false;
+      resolvedRouteStopsRef.current = [];
+      schoolCoordsRef.current = null;
+      schoolAddressRef.current = null;
+      completedStopsRef.current = new Set();
+      studentPickedUpRef.current = false;
+      routeRefreshRef.current = { at: 0, signature: "" };
+      monitorPushSyncRef.current = { at: 0, signature: "", inFlight: false };
       studentCodeDataRef.current = null;
       studentCodeFetchRef.current = false;
       if (loadingTimeoutRef.current) {
@@ -176,6 +279,17 @@ function HomeContent() {
     lastSchoolAddressRef.current = null;
     hasFitRef.current = false;
     hasCenteredRef.current = false;
+    setEtaMinutes(null);
+    setEtaDistanceKm(null);
+    setEtaTitle("Llegada");
+    setDailyStopStatuses({});
+    resolvedRouteStopsRef.current = [];
+    schoolCoordsRef.current = null;
+    schoolAddressRef.current = null;
+    completedStopsRef.current = new Set();
+    studentPickedUpRef.current = false;
+    routeRefreshRef.current = { at: 0, signature: "" };
+    monitorPushSyncRef.current = { at: 0, signature: "", inFlight: false };
     studentCodeDataRef.current = null;
     studentCodeFetchRef.current = false;
     setMarkersLoading(true);
@@ -188,53 +302,72 @@ function HomeContent() {
     }, 7000);
   }, [profile]);
 
-  const getRouteId = (route) => {
-    if (!route) return null;
-    return route
-      .toString()
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
-  };
+  const resolveRouteKey = (currentProfile) =>
+    resolveRouteKeyFromStops(currentProfile, routeStopsByKey);
 
-  const normalizeRoute = (route) => {
-    if (!route) return "";
-    return route
-      .toString()
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, " ");
-  };
-
-  const resolveRouteKey = (currentProfile) => {
-    if (!currentProfile) return null;
-    const institutionCode = currentProfile?.institutionCode?.toString().trim();
-    const normalizedRoute = normalizeRoute(currentProfile?.route);
-
-    if (institutionCode && normalizedRoute) {
-      const exact = `${institutionCode}:${normalizedRoute}`;
-      if (ROUTE_STOPS[exact]) return exact;
+  useEffect(() => {
+    if (!profile) {
+      setDailyStopStatuses({});
+      return;
     }
 
-    const keys = getRouteKeys();
-
-    if (institutionCode) {
-      const byInstitution = keys.filter((key) =>
-        key.startsWith(`${institutionCode}:`)
-      );
-      if (byInstitution.length === 1) return byInstitution[0];
+    const routeKey = resolveRouteKey(profile);
+    const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
+    const routeId = getRouteId(routeNameFromKey || profile.route);
+    if (!routeId) {
+      setDailyStopStatuses({});
+      return;
     }
 
-    if (normalizedRoute) {
-      const byRoute = keys.filter((key) => key.endsWith(`:${normalizedRoute}`));
-      if (byRoute.length === 1) return byRoute[0];
+    const dateKey = getServiceDateKey();
+    const dailyStopsRef = collection(db, "routes", routeId, "daily", dateKey, "stops");
+    const unsubscribe = onSnapshot(
+      dailyStopsRef,
+      (snapshot) => {
+        setDailyStopStatuses(createStopStatusMap(snapshot.docs));
+      },
+      () => {
+        setDailyStopStatuses({});
+      }
+    );
+
+    return () => unsubscribe();
+  }, [profile, routeStopsByKey]);
+
+  const getStopCoords = async (stop) => {
+    if (!stop) return null;
+    const lat = Number(stop?.coords?.lat);
+    const lng = Number(stop?.coords?.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      return { lat, lng };
     }
 
-    // Current project has one configured route, so fallback keeps map functional.
-    if (keys.length === 1) return keys[0];
+    const address =
+      stop?.address === null || stop?.address === undefined
+        ? ""
+        : stop.address.toString().trim();
+    if (!address) return null;
 
-    return null;
+    const key = address.toLowerCase();
+    const cached = geocodedStopsRef.current.get(key);
+    if (cached) return cached;
+
+    const pending = geocodingStopsRef.current.get(key);
+    if (pending) return pending;
+
+    const request = geocodeAddressToCoords(address)
+      .then((coords) => {
+        if (coords) {
+          geocodedStopsRef.current.set(key, coords);
+        }
+        return coords;
+      })
+      .finally(() => {
+        geocodingStopsRef.current.delete(key);
+      });
+
+    geocodingStopsRef.current.set(key, request);
+    return request;
   };
 
   const maybeUploadLocation = async (coords) => {
@@ -249,7 +382,9 @@ function HomeContent() {
       if (now - lastUploadRef.current < 5000) return;
       lastUploadRef.current = now;
 
-      const routeId = getRouteId(currentProfile.route);
+      const routeKey = resolveRouteKey(currentProfile);
+      const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
+      const routeId = getRouteId(routeNameFromKey || currentProfile.route);
       if (!routeId) return;
 
       const liveRef = doc(db, "routes", routeId, "live", "current");
@@ -313,14 +448,17 @@ function HomeContent() {
     return null;
   };
 
-  const fetchRoutesData = async (points, timeoutMs = 9000) => {
+  const fetchRoutesData = async (points, options = {}, timeoutMs = 9000) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch("/api/routes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ points }),
+        body: JSON.stringify({
+          points,
+          optimizeWaypoints: Boolean(options?.optimizeWaypoints),
+        }),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => ({}));
@@ -370,29 +508,108 @@ function HomeContent() {
     return coordinates;
   };
 
-  const setRoutePolylinePath = (google, map, path, options = {}) => {
-    if (!Array.isArray(path) || path.length < 2) return false;
-    const baseStyle = {
-      strokeColor: "#5aa9ff",
-      strokeOpacity: 0.85,
-      strokeWeight: 6,
-    };
-    const style = { ...baseStyle, ...options };
-    if (!routePolylineRef.current) {
-      routePolylineRef.current = new google.maps.Polyline({
-        path,
-        map,
-        ...style,
-      });
-      return true;
+  const sumLegs = (legs, startIndex, endIndexInclusive) => {
+    if (!Array.isArray(legs) || !legs.length) {
+      return { distanceMeters: null, durationSeconds: null };
     }
-    routePolylineRef.current.setPath(path);
-    routePolylineRef.current.setMap(map);
-    routePolylineRef.current.setOptions(style);
-    return true;
+    const start = Math.max(0, startIndex);
+    const end = Math.min(legs.length - 1, endIndexInclusive);
+    if (end < start) {
+      return { distanceMeters: null, durationSeconds: null };
+    }
+
+    let distanceMeters = 0;
+    let hasDistance = false;
+    let durationSeconds = 0;
+    let hasDuration = false;
+    for (let index = start; index <= end; index += 1) {
+      const leg = legs[index];
+      if (typeof leg?.distanceMeters === "number") {
+        distanceMeters += leg.distanceMeters;
+        hasDistance = true;
+      }
+      const parsedDuration = parseDurationSeconds(leg?.duration);
+      if (typeof parsedDuration === "number") {
+        durationSeconds += parsedDuration;
+        hasDuration = true;
+      }
+    }
+
+    return {
+      distanceMeters: hasDistance ? distanceMeters : null,
+      durationSeconds: hasDuration ? durationSeconds : null,
+    };
   };
 
-  const drawRouteWithDirectionsService = async (google, map, routeCoords) => {
+  const clampChannel = (value) => {
+    const rounded = Math.round(value);
+    if (rounded < 0) return 0;
+    if (rounded > 255) return 255;
+    return rounded;
+  };
+
+  const interpolateColor = (start, end, t) => {
+    const ratio = Math.max(0, Math.min(1, t));
+    const r = clampChannel(start.r + (end.r - start.r) * ratio);
+    const g = clampChannel(start.g + (end.g - start.g) * ratio);
+    const b = clampChannel(start.b + (end.b - start.b) * ratio);
+    return `rgb(${r}, ${g}, ${b})`;
+  };
+
+  const setRoutePolylinePath = (google, map, path, options = {}) => {
+    if (!Array.isArray(path) || path.length < 2) return false;
+
+    if (Array.isArray(routePolylineRef.current) && routePolylineRef.current.length) {
+      routePolylineRef.current.forEach((polyline) => {
+        polyline?.setMap?.(null);
+      });
+      routePolylineRef.current = [];
+    }
+
+    const lineOptions = {
+      strokeOpacity: 1,
+      strokeWeight: 10,
+      zIndex: 2,
+      geodesic: true,
+      ...(options?.line || {}),
+    };
+    const totalSegments = path.length - 1;
+    const chunkCount = Math.min(totalSegments, MAX_GRADIENT_SEGMENTS);
+    const chunkSize = Math.max(1, Math.ceil(totalSegments / chunkCount));
+    const created = [];
+
+    for (let chunk = 0; chunk < chunkCount; chunk += 1) {
+      const startIndex = chunk * chunkSize;
+      const endIndex = Math.min((chunk + 1) * chunkSize, path.length - 1);
+      if (endIndex <= startIndex) continue;
+
+      const chunkPath = path.slice(startIndex, endIndex + 1);
+      const ratio = chunkCount === 1 ? 1 : chunk / (chunkCount - 1);
+      const strokeColor = interpolateColor(
+        ROUTE_GRADIENT_START,
+        ROUTE_GRADIENT_END,
+        ratio
+      );
+
+      const polyline = new google.maps.Polyline({
+        path: chunkPath,
+        map,
+        strokeColor,
+        ...lineOptions,
+      });
+      created.push(polyline);
+    }
+
+    routePolylineRef.current = created;
+    return created.length > 0;
+  };
+
+  const drawRouteWithDirectionsService = async (
+    google,
+    map,
+    routeCoords,
+    options = {}
+  ) => {
     if (!Array.isArray(routeCoords) || routeCoords.length < 2) return false;
     const directionsService = new google.maps.DirectionsService();
     const waypoints = routeCoords.slice(1, -1).map((point) => ({
@@ -406,8 +623,9 @@ function HomeContent() {
           origin: routeCoords[0],
           destination: routeCoords[routeCoords.length - 1],
           waypoints,
-          optimizeWaypoints: false,
+          optimizeWaypoints: Boolean(options?.optimizeWaypoints),
           travelMode: google.maps.TravelMode.DRIVING,
+          avoidFerries: true,
         },
         (result, status) => {
           if (
@@ -429,17 +647,45 @@ function HomeContent() {
     });
   };
 
-  const requestLocation = () => {
-    const map = mapInstanceRef.current;
-    if (!map || !window.google) return;
+  const clearRoutePolyline = () => {
+    if (Array.isArray(routePolylineRef.current) && routePolylineRef.current.length) {
+      routePolylineRef.current.forEach((polyline) => {
+        polyline?.setMap?.(null);
+      });
+      routePolylineRef.current = [];
+    }
+  };
 
-    if (watchIdRef.current !== null) {
+  const stopLocationWatch = () => {
+    if (watchIdRef.current !== null && "geolocation" in navigator) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
+    }
+    hasActiveLocationWatchRef.current = false;
+  };
+
+  const requestLocation = (options = {}) => {
+    const force = Boolean(options?.force);
+    const map = mapInstanceRef.current;
+    if (!map || !window.google || !("geolocation" in navigator)) return;
+
+    const now = Date.now();
+    if (!force && now < locationRetryAfterRef.current) return;
+    if (!force && hasActiveLocationWatchRef.current) return;
+    if (!force && now - lastLocationRequestAtRef.current < 5000) return;
+    lastLocationRequestAtRef.current = now;
+
+    if (force) {
+      stopLocationWatch();
+    } else if (watchIdRef.current !== null) {
+      hasActiveLocationWatchRef.current = true;
+      return;
     }
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        locationErrorCountRef.current = 0;
+        locationRetryAfterRef.current = 0;
         const coords = {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
@@ -462,12 +708,22 @@ function HomeContent() {
           accuracyCircleRef.current.setRadius(position.coords.accuracy || 0);
         }
       },
-      () => null,
-      { enableHighAccuracy: true }
+      (error) => {
+        if (error?.code === 1) {
+          // Permission denied: avoid retry storms.
+          stopLocationWatch();
+          locationRetryAfterRef.current = Date.now() + 5 * 60 * 1000;
+          return;
+        }
+      },
+      { enableHighAccuracy: false, maximumAge: 5000, timeout: 12000 }
     );
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
+        hasActiveLocationWatchRef.current = true;
+        locationErrorCountRef.current = 0;
+        locationRetryAfterRef.current = 0;
         const coords = {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
@@ -490,62 +746,374 @@ function HomeContent() {
           accuracyCircleRef.current.setRadius(position.coords.accuracy || 0);
         }
       },
-      () => null,
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+      (error) => {
+        locationErrorCountRef.current += 1;
+        if (error?.code === 1) {
+          stopLocationWatch();
+          locationRetryAfterRef.current = Date.now() + 5 * 60 * 1000;
+          return;
+        }
+        if (locationErrorCountRef.current >= 3) {
+          stopLocationWatch();
+          locationRetryAfterRef.current = Date.now() + 30 * 1000;
+        }
+      },
+      { enableHighAccuracy: false, maximumAge: 5000, timeout: 12000 }
     );
+    hasActiveLocationWatchRef.current = true;
   };
 
-  const updateEta = async (coords) => {
-    if (!coords || !profile) return;
-    const routeKey = resolveRouteKey(profile);
-    const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
-    const destinationStop = routeStops?.[routeStops.length - 1];
-    if (!destinationStop?.coords) return;
-
-    const now = Date.now();
-    if (now - etaLastFetchRef.current < 30000 && etaKeyRef.current === routeKey) {
-      return;
+  const getDirectRouteMetrics = async (from, to) => {
+    if (!from || !to) {
+      return { distanceMeters: null, durationSeconds: null };
     }
-    etaLastFetchRef.current = now;
-    etaKeyRef.current = routeKey;
-
-    const fallbackDistance = distanceMetersBetween(coords, destinationStop.coords);
-    const applyFallbackEta = () => {
-      if (!Number.isFinite(fallbackDistance)) return;
-      const km = fallbackDistance / 1000;
-      // 24 km/h average urban bus speed to keep ETA realistic when API is unavailable.
-      const minutes = Math.max(1, Math.round((km / 24) * 60));
-      setEtaDistanceKm(km.toFixed(1));
-      setEtaMinutes(minutes);
-    };
-
+    const fallbackDistance = distanceMetersBetween(from, to);
     try {
       const { ok, data } = await fetchRoutesData([
-        { lat: coords.lat, lng: coords.lng },
-        { lat: destinationStop.coords.lat, lng: destinationStop.coords.lng },
+        { lat: from.lat, lng: from.lng },
+        { lat: to.lat, lng: to.lng },
       ]);
       if (!ok) {
-        applyFallbackEta();
-        return;
+        return { distanceMeters: fallbackDistance, durationSeconds: null };
       }
 
       const distanceMeters =
-        typeof data.distanceMeters === "number" ? data.distanceMeters : null;
-      const durationSeconds = parseDurationSeconds(data.duration);
+        typeof data?.distanceMeters === "number" ? data.distanceMeters : fallbackDistance;
+      const durationSeconds = parseDurationSeconds(data?.duration);
+      return { distanceMeters, durationSeconds };
+    } catch (error) {
+      return { distanceMeters: fallbackDistance, durationSeconds: null };
+    }
+  };
 
-      if (distanceMeters !== null) {
-        setEtaDistanceKm((distanceMeters / 1000).toFixed(1));
-      } else if (Number.isFinite(fallbackDistance)) {
-        setEtaDistanceKm((fallbackDistance / 1000).toFixed(1));
-      }
-      if (durationSeconds !== null) {
+  const setEtaMetrics = ({ title, distanceMeters, durationSeconds }) => {
+    setEtaTitle(title || "Llegada");
+    if (typeof distanceMeters === "number" && Number.isFinite(distanceMeters)) {
+      const km = distanceMeters / 1000;
+      setEtaDistanceKm(km.toFixed(1));
+      if (typeof durationSeconds === "number" && Number.isFinite(durationSeconds)) {
         setEtaMinutes(Math.max(1, Math.round(durationSeconds / 60)));
       } else {
-        applyFallbackEta();
+        setEtaMinutes(Math.max(1, Math.round((km / 24) * 60)));
       }
-    } catch (err) {
-      applyFallbackEta();
+      return;
     }
+    setEtaDistanceKm(null);
+    setEtaMinutes(null);
+  };
+
+  const syncMonitorPushEta = async ({ coords, orderedPending, legs }) => {
+    if (!profile || !isMonitorProfile(profile) || !Array.isArray(orderedPending)) return;
+    if (!orderedPending.length) return;
+
+    const routeKey = resolveRouteKey(profile);
+    const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
+    const routeId = getRouteId(routeNameFromKey || profile.route);
+    if (!routeId) return;
+
+    const stops = orderedPending.map((stop, index) => {
+      const stopKey = normalizeStopKey(stop) || stop.id || `paradero-${index + 1}`;
+      const statusData =
+        dailyStopStatuses[stopKey] ||
+        dailyStopStatuses[normalizeStopKey({ address: stop.address })] ||
+        dailyStopStatuses[normalizeStopKey({ title: stop.title })] ||
+        null;
+      const legMetrics = sumLegs(legs, 0, index);
+      const minutes =
+        typeof legMetrics.durationSeconds === "number"
+          ? Math.max(1, Math.round(legMetrics.durationSeconds / 60))
+          : null;
+      const statusValue = statusData?.status || null;
+
+      return {
+        key: stopKey,
+        title: stop.title || `Paradero ${index + 1}`,
+        address: stop.address || null,
+        order: index,
+        minutes,
+        status: statusValue,
+        excluded: isStopAbsentStatus(statusValue),
+      };
+    });
+
+    const roundedCoords = `${coords.lat.toFixed(4)},${coords.lng.toFixed(4)}`;
+    const signature = `${routeId}:${roundedCoords}:${stops
+      .map((item) => `${item.key}:${item.minutes ?? "na"}:${item.status ?? "none"}`)
+      .join("|")}`;
+    const now = Date.now();
+    if (
+      monitorPushSyncRef.current.inFlight ||
+      (monitorPushSyncRef.current.signature === signature &&
+        now - monitorPushSyncRef.current.at < 25000)
+    ) {
+      return;
+    }
+
+    monitorPushSyncRef.current = {
+      at: now,
+      signature,
+      inFlight: true,
+    };
+
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) return;
+      const idToken = await currentUser.getIdToken();
+      if (!idToken) return;
+
+      await fetch("/api/push/sync", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          eventType: "eta_update",
+          routeId,
+          route: profile.route || null,
+          institutionCode: profile.institutionCode || null,
+          busCoords: coords,
+          stops,
+        }),
+      });
+    } catch (error) {
+      // ignore push sync errors to avoid interrupting ETA rendering
+    } finally {
+      monitorPushSyncRef.current = {
+        ...monitorPushSyncRef.current,
+        inFlight: false,
+      };
+    }
+  };
+
+  const resolveStudentStopCoords = async (currentProfile) => {
+    if (!currentProfile) return null;
+    const stopLat = parseCoord(currentProfile.stopLat);
+    const stopLng = parseCoord(currentProfile.stopLng);
+    if (stopLat !== null && stopLng !== null) {
+      return { lat: stopLat, lng: stopLng };
+    }
+
+    const stopAddress = toLowerText(currentProfile.stopAddress)
+      ? currentProfile.stopAddress.toString().trim()
+      : "";
+    if (!stopAddress) return null;
+    const query = stopAddress.includes("Bogotá")
+      ? stopAddress
+      : `${stopAddress}, Bogotá, Colombia`;
+    return geocodeAddressToCoords(query);
+  };
+
+  const findStopByAddressOrCoords = (stops, address, coords) => {
+    const normalizedAddress = toLowerText(address);
+    const byAddress = normalizedAddress
+      ? stops.find(
+          (stop) =>
+            toLowerText(stop?.address) === normalizedAddress ||
+            toLowerText(stop?.title) === normalizedAddress
+        )
+      : null;
+    if (byAddress) return byAddress;
+    if (!coords) return null;
+    return (
+      stops.find((stop) => {
+        const distance = distanceMetersBetween(stop?.coords, coords);
+        return typeof distance === "number" && distance <= STOP_REACHED_METERS;
+      }) || null
+    );
+  };
+
+  const updateEta = async (coords, options = {}) => {
+    if (!coords || !profile) return;
+
+    const resolvedStops = Array.isArray(resolvedRouteStopsRef.current)
+      ? resolvedRouteStopsRef.current
+      : [];
+    const schoolCoords = schoolCoordsRef.current;
+    const schoolAddress = schoolAddressRef.current;
+    const routeKey = resolveRouteKey(profile) || "route";
+    const rounded = `${coords.lat.toFixed(4)},${coords.lng.toFixed(4)}`;
+    const signature = `${routeKey}:${rounded}:${resolvedStops.length}:${
+      schoolCoords ? `${schoolCoords.lat.toFixed(4)},${schoolCoords.lng.toFixed(4)}` : "no-school"
+    }`;
+
+    const now = Date.now();
+    if (
+      !options?.force &&
+      routeRefreshRef.current.signature === signature &&
+      now - routeRefreshRef.current.at < ROUTE_REFRESH_INTERVAL_MS
+    ) {
+      return;
+    }
+    routeRefreshRef.current = { at: now, signature };
+
+    resolvedStops.forEach((stop) => {
+      const distance = distanceMetersBetween(coords, stop.coords);
+      if (typeof distance === "number" && distance <= STOP_REACHED_METERS) {
+        completedStopsRef.current.add(stop.id);
+      }
+    });
+    const pendingStops = resolvedStops.filter(
+      (stop) => !completedStopsRef.current.has(stop.id)
+    );
+
+    const targetSchool = schoolCoords
+      ? schoolCoords
+      : schoolAddress
+        ? await geocodeAddressToCoords(schoolAddress)
+        : null;
+
+    if (!pendingStops.length && !targetSchool) {
+      setEtaMetrics({ title: "Llegada", distanceMeters: null, durationSeconds: null });
+      return;
+    }
+
+    const points = [{ lat: coords.lat, lng: coords.lng }];
+    pendingStops.forEach((stop) => {
+      points.push({ lat: stop.coords.lat, lng: stop.coords.lng });
+    });
+    if (targetSchool) {
+      points.push({ lat: targetSchool.lat, lng: targetSchool.lng });
+    }
+
+    let routeData = null;
+    if (points.length >= 2) {
+      try {
+        const { ok, data } = await fetchRoutesData(points, {
+          optimizeWaypoints: Boolean(targetSchool && pendingStops.length > 1),
+        });
+        if (ok) {
+          routeData = data;
+        }
+      } catch (error) {
+        routeData = null;
+      }
+    }
+
+    const optimizedIndexes = Array.isArray(routeData?.optimizedIntermediateWaypointIndex)
+      ? routeData.optimizedIntermediateWaypointIndex
+      : [];
+    const orderedPending =
+      targetSchool && optimizedIndexes.length === pendingStops.length
+        ? optimizedIndexes
+            .map((index) => pendingStops[index])
+            .filter(Boolean)
+        : pendingStops;
+    const legs = Array.isArray(routeData?.legs) ? routeData.legs : [];
+
+    if (routeData?.encodedPolyline && window.google && mapInstanceRef.current) {
+      const path = decodePolyline(routeData.encodedPolyline);
+      if (path.length) {
+        setRoutePolylinePath(window.google, mapInstanceRef.current, path);
+      }
+    }
+
+    if (isMonitorProfile(profile)) {
+      if (orderedPending.length) {
+        void syncMonitorPushEta({ coords, orderedPending, legs });
+        const firstLeg = sumLegs(legs, 0, 0);
+        let distanceMeters = firstLeg.distanceMeters;
+        let durationSeconds = firstLeg.durationSeconds;
+        if (distanceMeters === null) {
+          const direct = await getDirectRouteMetrics(coords, orderedPending[0].coords);
+          distanceMeters = direct.distanceMeters;
+          durationSeconds = direct.durationSeconds;
+        }
+        setEtaMetrics({
+          title: "Siguiente paradero",
+          distanceMeters,
+          durationSeconds,
+        });
+        return;
+      }
+
+      if (targetSchool) {
+        const toSchool = await getDirectRouteMetrics(coords, targetSchool);
+        setEtaMetrics({
+          title: "Llegada al colegio",
+          distanceMeters: toSchool.distanceMeters,
+          durationSeconds: toSchool.durationSeconds,
+        });
+        return;
+      }
+
+      setEtaMetrics({ title: "Llegada", distanceMeters: null, durationSeconds: null });
+      return;
+    }
+
+    const studentCoords = await resolveStudentStopCoords(profile);
+    const studentStop = findStopByAddressOrCoords(
+      resolvedStops,
+      profile.stopAddress,
+      studentCoords
+    );
+    if (studentStop) {
+      const distanceToStudent = distanceMetersBetween(coords, studentStop.coords);
+      if (typeof distanceToStudent === "number" && distanceToStudent <= STOP_REACHED_METERS) {
+        completedStopsRef.current.add(studentStop.id);
+      }
+    }
+
+    if (studentCoords) {
+      const distanceToOwnStop = distanceMetersBetween(coords, studentCoords);
+      if (
+        typeof distanceToOwnStop === "number" &&
+        distanceToOwnStop <= STOP_REACHED_METERS
+      ) {
+        studentPickedUpRef.current = true;
+      }
+    }
+
+    const isPickedUp =
+      studentPickedUpRef.current ||
+      (studentStop ? completedStopsRef.current.has(studentStop.id) : false);
+    if (isPickedUp) {
+      studentPickedUpRef.current = true;
+    }
+    if (!isPickedUp) {
+      const studentIndex = orderedPending.findIndex(
+        (stop) => stop.id === studentStop?.id
+      );
+      if (studentIndex >= 0) {
+        const etaToStudent = sumLegs(legs, 0, studentIndex);
+        setEtaMetrics({
+          title: "Llegada a tu paradero",
+          distanceMeters: etaToStudent.distanceMeters,
+          durationSeconds: etaToStudent.durationSeconds,
+        });
+        return;
+      }
+
+      const directStudent = await getDirectRouteMetrics(coords, studentCoords);
+      setEtaMetrics({
+        title: "Llegada a tu paradero",
+        distanceMeters: directStudent.distanceMeters,
+        durationSeconds: directStudent.durationSeconds,
+      });
+      return;
+    }
+
+    if (targetSchool) {
+      if (legs.length) {
+        const toSchool = sumLegs(legs, 0, legs.length - 1);
+        setEtaMetrics({
+          title: "Llegada al colegio",
+          distanceMeters: toSchool.distanceMeters,
+          durationSeconds: toSchool.durationSeconds,
+        });
+        return;
+      }
+
+      const directSchool = await getDirectRouteMetrics(coords, targetSchool);
+      setEtaMetrics({
+        title: "Llegada al colegio",
+        distanceMeters: directSchool.distanceMeters,
+        durationSeconds: directSchool.durationSeconds,
+      });
+      return;
+    }
+
+    setEtaMetrics({ title: "Llegada", distanceMeters: null, durationSeconds: null });
   };
 
   useEffect(() => {
@@ -640,41 +1208,9 @@ function HomeContent() {
   }, []);
 
   const geocodeAddress = async (google, address) => {
-    if (typeof window !== "undefined") {
-      const cached = window.localStorage.getItem(`geocode:${address}`);
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          if (
-            typeof parsed?.lat === "number" &&
-            typeof parsed?.lng === "number"
-          ) {
-            return new google.maps.LatLng(parsed.lat, parsed.lng);
-          }
-        } catch (err) {
-          // ignore cache parse errors
-        }
-      }
-    }
-
-    try {
-      const response = await fetch("/api/geocode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem(
-            `geocode:${address}`,
-            JSON.stringify({ lat: data.lat, lng: data.lng })
-          );
-        }
-        return new google.maps.LatLng(data.lat, data.lng);
-      }
-    } catch (err) {
-      // ignore
+    const apiCoords = await geocodeAddressToCoords(address);
+    if (apiCoords) {
+      return new google.maps.LatLng(apiCoords.lat, apiCoords.lng);
     }
 
     if (!geocoderRef.current) {
@@ -704,7 +1240,11 @@ function HomeContent() {
       try {
         const content = document.createElement("div");
         content.className =
-          kind === "user" ? "marker-dot marker-user" : "marker-dot marker-stop";
+          kind === "user"
+            ? "marker-dot marker-user"
+            : kind === "school"
+              ? "marker-dot marker-school"
+              : "marker-dot marker-stop";
         return new AdvancedMarker({
           map,
           position,
@@ -726,6 +1266,10 @@ function HomeContent() {
             strokeColor: "#ffffff",
             strokeWeight: 2.5,
           }
+        : kind === "school"
+          ? {
+              url: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
+            }
         : {
             url: "https://maps.google.com/mapfiles/ms/icons/red-dot.png",
           };
@@ -786,7 +1330,12 @@ function HomeContent() {
 
       const stopAddress =
         profile.stopAddress || studentCodeDataRef.current?.stopAddress || null;
-      const schoolAddress = null;
+      const stopStatusMap = dailyStopStatuses || {};
+      const schoolAddress =
+        institutionAddress ||
+        profile.institutionAddress ||
+        studentCodeDataRef.current?.institutionAddress ||
+        null;
       const stopLat = parseCoord(
         profile.stopLat ?? studentCodeDataRef.current?.stopLat
       );
@@ -800,7 +1349,30 @@ function HomeContent() {
       if (!stopCoords && stopAddress) {
         // ignore
       }
-      const schoolCoords = null;
+      const schoolLat = parseCoord(
+        institutionCoords?.lat ??
+          profile.institutionLat ??
+          studentCodeDataRef.current?.institutionLat
+      );
+      const schoolLng = parseCoord(
+        institutionCoords?.lng ??
+          profile.institutionLng ??
+          studentCodeDataRef.current?.institutionLng
+      );
+      let schoolCoords =
+        schoolLat !== null && schoolLng !== null
+          ? new google.maps.LatLng(schoolLat, schoolLng)
+          : null;
+      if (!schoolCoords && schoolAddress) {
+        const query = schoolAddress.includes("Bogotá")
+          ? schoolAddress
+          : `${schoolAddress}, Bogotá, Colombia`;
+        schoolCoords = await geocodeAddress(google, query);
+      }
+      schoolCoordsRef.current = schoolCoords
+        ? { lat: schoolCoords.lat(), lng: schoolCoords.lng() }
+        : null;
+      schoolAddressRef.current = schoolAddress;
 
       const updateLoadingState = () => {
         const needsStop = Boolean(stopCoords || stopAddress);
@@ -849,21 +1421,47 @@ function HomeContent() {
       };
 
       const routeKey = resolveRouteKey(profile);
-      const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
+      const routeStops = routeKey ? routeStopsByKey[routeKey] : null;
       // no logging
       const stopCandidates = [];
+      const ownAddressKey = normalizeStopKey({
+        address: stopAddress,
+        title: "Paradero",
+      });
+      const matchedRouteStop = (routeStops || []).find(
+        (item) =>
+          toLowerText(item?.address) &&
+          toLowerText(item?.address) === toLowerText(stopAddress)
+      );
+      const ownStopKey = normalizeStopKey(matchedRouteStop) || ownAddressKey;
+      const ownStopStatus = ownStopKey ? stopStatusMap[ownStopKey]?.status : null;
+      const ownStopIsAbsent = isStopAbsentStatus(ownStopStatus);
       if (stopCoords) {
-        stopCandidates.push({ title: "Paradero", coords: stopCoords });
+        if (!ownStopIsAbsent) {
+          stopCandidates.push({
+            id: ownStopKey || "student-stop",
+            title: "Paradero",
+            address: stopAddress,
+            coords: stopCoords,
+          });
+        }
       } else if (stopAddress) {
-        stopCandidates.push({
-          title: "Paradero",
-          address: stopAddress,
-        });
+        if (!ownStopIsAbsent) {
+          stopCandidates.push({
+            id: ownStopKey || "student-stop",
+            title: "Paradero",
+            address: stopAddress,
+          });
+        }
       }
 
       if (routeStops?.length) {
         routeStops.forEach((stop, index) => {
+          const stopKey = normalizeStopKey(stop);
+          const stopStatus = stopKey ? stopStatusMap[stopKey]?.status : null;
+          if (isStopAbsentStatus(stopStatus)) return;
           stopCandidates.push({
+            id: stopKey || stop.id || `paradero-${index + 1}`,
             title: stop.title || `Paradero ${index + 1}`,
             address: stop.address || null,
             coords: stop.coords
@@ -876,7 +1474,12 @@ function HomeContent() {
       const coordsList = [];
       for (const candidate of stopCandidates) {
         if (candidate.coords) {
-          coordsList.push({ coords: candidate.coords, title: candidate.title });
+          coordsList.push({
+            id: candidate.id || candidate.title,
+            coords: candidate.coords,
+            title: candidate.title,
+            address: candidate.address || null,
+          });
           continue;
         }
         if (candidate.address) {
@@ -885,14 +1488,39 @@ function HomeContent() {
             : `${candidate.address}, Bogotá, Colombia`;
           const coords = await geocodeAddress(google, query);
           if (coords) {
-            coordsList.push({ coords, title: candidate.title });
+            coordsList.push({
+              id: candidate.id || candidate.title,
+              coords,
+              title: candidate.title,
+              address: candidate.address,
+            });
           }
         }
       }
 
       if (coordsList.length) {
+        const uniqueById = new Map();
+        coordsList.forEach((item) => {
+          const key =
+            item.address?.toLowerCase() ||
+            `${item.coords.lat().toFixed(6)},${item.coords.lng().toFixed(6)}`;
+          if (!uniqueById.has(key)) {
+            uniqueById.set(key, item);
+          }
+        });
+        const resolvedList = Array.from(uniqueById.values());
+        resolvedRouteStopsRef.current = resolvedList.map((item, index) => ({
+          id: item.id || `paradero-${index + 1}`,
+          title: item.title || `Paradero ${index + 1}`,
+          address: item.address || null,
+          coords: {
+            lat: item.coords.lat(),
+            lng: item.coords.lng(),
+          },
+        }));
+
         routeMarkersRef.current.forEach((marker) => setMarkerMap(marker, null));
-        routeMarkersRef.current = coordsList.map((item) => {
+        routeMarkersRef.current = resolvedList.map((item) => {
           return createMarker(google, {
             position: item.coords,
             map,
@@ -901,59 +1529,84 @@ function HomeContent() {
           });
         });
 
+        if (SHOW_SCHOOL_MARKER && schoolCoords) {
+          if (!schoolMarkerRef.current) {
+            schoolMarkerRef.current = createMarker(google, {
+              position: schoolCoords,
+              map,
+              title: "Colegio",
+              kind: "school",
+            });
+          } else {
+            setMarkerPosition(schoolMarkerRef.current, schoolCoords);
+            setMarkerMap(schoolMarkerRef.current, map);
+          }
+        } else if (schoolMarkerRef.current) {
+          setMarkerMap(schoolMarkerRef.current, null);
+        }
+
         stopReadyRef.current = true;
         updateLoadingState();
 
+        const routeCoords = resolvedList.map((item) => item.coords);
+        const pointsForRoute = routeCoords.map((point) => ({
+          lat: point.lat(),
+          lng: point.lng(),
+        }));
+        if (schoolCoords) {
+          pointsForRoute.push({ lat: schoolCoords.lat(), lng: schoolCoords.lng() });
+        }
+        const optimizeWaypoints = pointsForRoute.length > 3;
+        const routeSignature = routeCoords
+          .map((point) => `${point.lat().toFixed(6)},${point.lng().toFixed(6)}`)
+          .join("|") + (schoolCoords ? `|school:${schoolCoords.lat().toFixed(6)},${schoolCoords.lng().toFixed(6)}` : "");
+        const routeRenderKey = `${routeKey || "route"}:${routeSignature}:${optimizeWaypoints ? "opt" : "plain"}`;
+
         if (
-          routeStops?.length >= 2 &&
-          (routeKeyRef.current !== routeKey || !routePolylineRef.current)
+          pointsForRoute.length >= 2 &&
+          (routeKeyRef.current !== routeRenderKey ||
+            !Array.isArray(routePolylineRef.current) ||
+            routePolylineRef.current.length === 0)
         ) {
-          routeKeyRef.current = routeKey;
-          const routeCoords = coordsList.map((item) => item.coords);
-          if (routeCoords.length >= 2) {
-            let routeDrawn = false;
-            try {
-              const { ok, data } = await fetchRoutesData(
-                routeCoords.map((point) => ({
-                  lat: point.lat(),
-                  lng: point.lng(),
-                }))
-              );
-              if (ok && data?.encodedPolyline) {
-                const path = decodePolyline(data.encodedPolyline);
-                if (path.length) {
-                  routeDrawn = setRoutePolylinePath(google, map, path);
-                }
+          routeKeyRef.current = routeRenderKey;
+          let routeDrawn = false;
+          try {
+            const { ok, data } = await fetchRoutesData(pointsForRoute, {
+              optimizeWaypoints,
+            });
+            if (ok && data?.encodedPolyline) {
+              const path = decodePolyline(data.encodedPolyline);
+              if (path.length) {
+                routeDrawn = setRoutePolylinePath(google, map, path);
               }
-            } catch (err) {
-              routeDrawn = false;
             }
+          } catch (err) {
+            routeDrawn = false;
+          }
 
-            if (!routeDrawn) {
-              routeDrawn = await drawRouteWithDirectionsService(
-                google,
-                map,
-                routeCoords
-              );
-            }
+          if (!routeDrawn) {
+            routeDrawn = await drawRouteWithDirectionsService(
+              google,
+              map,
+              pointsForRoute.map(
+                (point) => new google.maps.LatLng(point.lat, point.lng)
+              ),
+              { optimizeWaypoints }
+            );
+          }
 
-            if (!routeDrawn) {
-              const fallbackPath = routeCoords.map((point) => ({
-                lat: point.lat(),
-                lng: point.lng(),
-              }));
-              setRoutePolylinePath(google, map, fallbackPath, {
-                strokeOpacity: 0.75,
-                strokeWeight: 5,
-              });
-              routeKeyRef.current = null;
-            }
+          if (!routeDrawn) {
+            clearRoutePolyline();
+            routeKeyRef.current = null;
           }
         }
 
         if (!hasFitRef.current) {
           const bounds = new google.maps.LatLngBounds();
-          coordsList.forEach((item) => bounds.extend(item.coords));
+          resolvedList.forEach((item) => bounds.extend(item.coords));
+          if (schoolCoords) {
+            bounds.extend(schoolCoords);
+          }
           if (lastPositionRef.current) {
             bounds.extend(lastPositionRef.current);
           }
@@ -963,8 +1616,19 @@ function HomeContent() {
           }
         }
       }
+      if (!coordsList.length) {
+        routeMarkersRef.current.forEach((marker) => setMarkerMap(marker, null));
+        routeMarkersRef.current = [];
+        resolvedRouteStopsRef.current = [];
+        if (schoolMarkerRef.current) {
+          setMarkerMap(schoolMarkerRef.current, null);
+        }
+        clearRoutePolyline();
+      }
 
-      // School marker disabled for now to isolate stop marker performance.
+      if (lastPositionRef.current) {
+        void updateEta(lastPositionRef.current, { force: true });
+      }
     } finally {
       updatingMarkersRef.current = false;
     }
@@ -974,7 +1638,7 @@ function HomeContent() {
     const targetStop = searchParams?.get("stop");
     if (!targetStop || !profile || !mapReady) return;
     const routeKey = resolveRouteKey(profile);
-    const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
+    const routeStops = routeKey ? routeStopsByKey[routeKey] : null;
     if (!routeStops?.length) return;
     const stop = routeStops.find(
       (item) => item.title.toLowerCase() === targetStop.toLowerCase()
@@ -998,7 +1662,7 @@ function HomeContent() {
     };
 
     void centerOnStop();
-  }, [searchParams, profile, mapReady]);
+  }, [searchParams, profile, mapReady, routeStopsByKey]);
 
   useEffect(() => {
     const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -1043,42 +1707,48 @@ function HomeContent() {
 
     return () => {
       isMounted = false;
-      if (watchIdRef.current !== null && "geolocation" in navigator) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-      }
+      stopLocationWatch();
     };
   }, []);
 
   useEffect(() => {
     if (!profile || !mapReady) return;
-    if (isMonitorProfile(profile)) {
-      requestLocation();
-    }
     updateRouteMarkers();
     if (mapInstanceRef.current && window.google?.maps) {
       window.google.maps.event.trigger(mapInstanceRef.current, "resize");
     }
+  }, [profile, mapReady, routeStopsByKey, dailyStopStatuses]);
+
+  useEffect(() => {
+    if (!profile || !mapReady) return;
+    if (isMonitorProfile(profile)) {
+      requestLocation();
+      return;
+    }
+    stopLocationWatch();
   }, [profile, mapReady]);
 
   useEffect(() => {
     if (!profile || !mapReady || !window.google) return;
-    if (isMonitorProfile(profile)) return;
 
     const map = mapInstanceRef.current;
     if (!map) return;
 
     const routeKey = resolveRouteKey(profile);
-    const routeNameFromKey = routeKey ? routeKey.split(":")[1] : null;
-    const routeId = getRouteId(profile.route || routeNameFromKey);
+    const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
+    const routeId = getRouteId(routeNameFromKey || profile.route);
     if (!routeId) return;
 
-    const routeStops = routeKey ? ROUTE_STOPS[routeKey] : null;
-    const firstStop = routeStops?.find((stop) => stop?.coords)?.coords;
-    if (firstStop && !lastPositionRef.current) {
-      const coords = { lat: firstStop.lat, lng: firstStop.lng };
-      updateMarker(window.google, map, coords, { upload: false });
-      void updateEta(coords);
-    }
+    const routeStops = routeKey ? routeStopsByKey[routeKey] : null;
+    const initFirstStop = async () => {
+      if (lastPositionRef.current || !routeStops?.length) return;
+      const firstWithCoords = routeStops.find((stop) => stop?.coords) || routeStops[0];
+      const firstCoords = await getStopCoords(firstWithCoords);
+      if (!firstCoords) return;
+      updateMarker(window.google, map, firstCoords, { upload: false });
+      void updateEta(firstCoords, { force: true });
+    };
+    void initFirstStop();
 
     const liveRef = doc(db, "routes", routeId, "live", "current");
     const unsubscribe = onSnapshot(liveRef, (snap) => {
@@ -1095,11 +1765,18 @@ function HomeContent() {
     });
 
     return () => unsubscribe();
-  }, [profile, mapReady]);
+  }, [profile, mapReady, routeStopsByKey]);
 
   useEffect(() => {
     updateRouteMarkers();
-  }, [profile, institutionAddress, institutionCoords]);
+  }, [profile, institutionAddress, institutionCoords, routeStopsByKey, dailyStopStatuses]);
+
+  useEffect(() => {
+    if (!profile) return;
+    if (!Object.keys(routeStopsByKey).length) return;
+    if (!lastPositionRef.current) return;
+    void updateEta(lastPositionRef.current, { force: true });
+  }, [profile, routeStopsByKey, dailyStopStatuses]);
 
   useEffect(() => {
     if (!profile) return;
@@ -1107,13 +1784,14 @@ function HomeContent() {
       if (
         !stopReadyRef.current ||
         !schoolReadyRef.current ||
-        !routePolylineRef.current
+        !Array.isArray(routePolylineRef.current) ||
+        routePolylineRef.current.length === 0
       ) {
         updateRouteMarkers();
       }
     }, 4000);
     return () => clearInterval(interval);
-  }, [profile, institutionAddress, institutionCoords]);
+  }, [profile, institutionAddress, institutionCoords, routeStopsByKey, dailyStopStatuses]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -1147,7 +1825,7 @@ function HomeContent() {
 
     if (profile && isMonitorProfile(profile)) {
       // For monitor, center on fresh device location if cache is missing.
-      requestLocation();
+      requestLocation({ force: true });
     }
     if (userMarkerRef.current) {
       const markerPos =
@@ -1183,7 +1861,7 @@ function HomeContent() {
       {profile ? (
         <div className="eta-bubble" aria-live="polite">
           <div className="eta-bubble-inner">
-            <div className="eta-title">Llegada</div>
+            <div className="eta-title">{etaTitle}</div>
             <div className="eta-metric">
               {etaMinutes !== null ? `${etaMinutes} min` : "--"}
             </div>

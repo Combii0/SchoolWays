@@ -1,6 +1,37 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function currentUserData() {
+      return request.auth != null
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
+        : null;
+    }
+
+    function sameInstitutionAs(uid) {
+      return request.auth != null
+        && currentUserData() != null
+        && get(/databases/$(database)/documents/users/$(uid)).data.institutionCode
+          == currentUserData().institutionCode;
+    }
+
+    function sameInstitutionFromUserDoc(userData) {
+      return request.auth != null
+        && currentUserData() != null
+        && userData != null
+        && userData.institutionCode != null
+        && currentUserData().institutionCode != null
+        && userData.institutionCode == currentUserData().institutionCode;
+    }
+
+    function isMonitor() {
+      return request.auth != null
+        && currentUserData() != null
+        && (
+          currentUserData().role in ["monitor", "monitora", "Monitor", "Monitora"]
+          || currentUserData().accountType in ["monitor", "monitora", "Monitor", "Monitora"]
+        );
+    }
+
     match /institutions/{institutionId} {
       allow get: if true;
       allow list: if false;
@@ -15,6 +46,92 @@ service cloud.firestore {
         allow get: if true;
         allow list: if false;
         allow create, update, delete: if false;
+      }
+
+      match /routes/{routeId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+
+        match /addresses/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /direcciones/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /stops/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+      }
+
+      match /rutas/{routeId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+
+        match /addresses/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /direcciones/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /stops/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+      }
+    }
+
+    match /colegios/{schoolId} {
+      allow get: if request.auth != null;
+      allow list: if false;
+      allow create, update, delete: if false;
+
+      match /routes/{routeId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+
+        match /addresses/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /direcciones/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /stops/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+      }
+
+      match /rutas/{routeId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+
+        match /addresses/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /direcciones/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
+
+        match /stops/{addressId} {
+          allow get, list: if request.auth != null;
+          allow create, update, delete: if false;
+        }
       }
     }
 
@@ -34,15 +151,81 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /routes/{routeId}/live/{docId} {
-      allow read: if request.auth != null;
-      allow create, update: if request.auth != null
-        && request.resource.data.uid == request.auth.uid;
-      allow delete: if false;
+    match /routes/{routeId} {
+      allow get, list: if request.auth != null;
+      allow create, update, delete: if false;
+
+      match /addresses/{addressId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+      }
+
+      match /direcciones/{addressId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+      }
+
+      match /stops/{addressId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+      }
+
+      match /live/{docId} {
+        allow read: if request.auth != null;
+        allow create, update: if request.auth != null
+          && request.resource.data.uid == request.auth.uid;
+        allow delete: if false;
+      }
+
+      match /daily/{dateId}/stops/{stopId} {
+        allow read: if request.auth != null;
+        allow create, update: if isMonitor()
+          && request.resource.data.monitorUid == request.auth.uid
+          && request.resource.data.institutionCode == currentUserData().institutionCode;
+        allow delete: if isMonitor();
+      }
+    }
+
+    match /rutas/{routeId} {
+      allow get, list: if request.auth != null;
+      allow create, update, delete: if false;
+
+      match /addresses/{addressId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+      }
+
+      match /direcciones/{addressId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+      }
+
+      match /stops/{addressId} {
+        allow get, list: if request.auth != null;
+        allow create, update, delete: if false;
+      }
+
+      match /daily/{dateId}/stops/{stopId} {
+        allow read: if request.auth != null;
+        allow create, update: if isMonitor()
+          && request.resource.data.monitorUid == request.auth.uid
+          && request.resource.data.institutionCode == currentUserData().institutionCode;
+        allow delete: if isMonitor();
+      }
     }
 
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null
+        && (request.auth.uid == uid || sameInstitutionFromUserDoc(resource.data));
+      allow write: if request.auth != null && request.auth.uid == uid;
+
+      match /asistencias/{dateId} {
+        allow read: if request.auth != null
+          && (request.auth.uid == uid || (isMonitor() && sameInstitutionAs(uid)));
+        allow create, update, delete: if request.auth != null
+          && (request.auth.uid == uid || (isMonitor() && sameInstitutionAs(uid)));
+      }
+
     }
   }
 }

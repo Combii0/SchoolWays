@@ -2,6 +2,7 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const points = Array.isArray(body?.points) ? body.points : [];
+    const optimizeWaypoints = Boolean(body?.optimizeWaypoints);
     if (points.length < 2) {
       return Response.json({ error: "At least two points required" }, { status: 400 });
     }
@@ -11,26 +12,29 @@ export async function POST(request) {
       return Response.json({ error: "Routes API key not configured" }, { status: 500 });
     }
 
-    const normalizePoint = (point) => ({
-      lat: Number(point?.lat),
-      lng: Number(point?.lng),
-    });
+    const normalizePoint = (point) => {
+      const lat = Number(point?.lat);
+      const lng = Number(point?.lng);
+      return {
+        lat,
+        lng,
+        valid: Number.isFinite(lat) && Number.isFinite(lng),
+      };
+    };
 
     const origin = normalizePoint(points[0]);
     const destination = normalizePoint(points[points.length - 1]);
     const intermediates = points.slice(1, -1).map((point) => {
       const normalized = normalizePoint(point);
+      if (!normalized.valid) {
+        return null;
+      }
       return {
         location: { latLng: { latitude: normalized.lat, longitude: normalized.lng } },
       };
     });
 
-    if (
-      !Number.isFinite(origin.lat) ||
-      !Number.isFinite(origin.lng) ||
-      !Number.isFinite(destination.lat) ||
-      !Number.isFinite(destination.lng)
-    ) {
+    if (!origin.valid || !destination.valid || intermediates.some((point) => !point)) {
       return Response.json({ error: "Invalid coordinates" }, { status: 400 });
     }
 
@@ -42,7 +46,7 @@ export async function POST(request) {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": apiKey,
           "X-Goog-FieldMask":
-            "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
+            "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.distanceMeters,routes.legs.duration,routes.optimizedIntermediateWaypointIndex",
         },
         body: JSON.stringify({
           origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
@@ -50,9 +54,10 @@ export async function POST(request) {
             location: { latLng: { latitude: destination.lat, longitude: destination.lng } },
           },
           intermediates,
+          optimizeWaypointOrder: optimizeWaypoints && intermediates.length > 1,
           travelMode: "DRIVE",
           routingPreference: "TRAFFIC_AWARE",
-          polylineQuality: "OVERVIEW",
+          polylineQuality: "HIGH_QUALITY",
           polylineEncoding: "ENCODED_POLYLINE",
         }),
       }
@@ -67,10 +72,23 @@ export async function POST(request) {
     }
 
     const route = data.routes[0];
+    const legs = Array.isArray(route.legs)
+      ? route.legs.map((leg) => ({
+          distanceMeters:
+            typeof leg?.distanceMeters === "number" ? leg.distanceMeters : null,
+          duration: typeof leg?.duration === "string" ? leg.duration : null,
+        }))
+      : [];
     return Response.json({
       encodedPolyline: route.polyline?.encodedPolyline || null,
       duration: route.duration || null,
       distanceMeters: route.distanceMeters || null,
+      legs,
+      optimizedIntermediateWaypointIndex: Array.isArray(
+        route.optimizedIntermediateWaypointIndex
+      )
+        ? route.optimizedIntermediateWaypointIndex
+        : [],
     });
   } catch (error) {
     return Response.json({ error: "Invalid request" }, { status: 400 });
