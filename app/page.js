@@ -431,7 +431,7 @@ function HomeContent() {
       userMarkerRef.current = createMarker(google, {
         position: coords,
         map,
-        title: "Tu ubicación",
+        title: "Bus escolar",
         kind: "user",
       });
     } else {
@@ -1282,12 +1282,9 @@ function HomeContent() {
     const icon =
       kind === "user"
         ? {
-            path: google.maps.SymbolPath.CIRCLE,
-            scale: 6,
-            fillColor: "#1a73e8",
-            fillOpacity: 1,
-            strokeColor: "#ffffff",
-            strokeWeight: 2.5,
+            url: "/icons/bus.png",
+            scaledSize: new google.maps.Size(26, 26),
+            anchor: new google.maps.Point(13, 13),
           }
         : kind === "school"
           ? {

@@ -26,7 +26,7 @@ messaging.onBackgroundMessage((payload) => {
 
   self.registration.showNotification(title, {
     body,
-    icon: "/logo.svg",
+    icon: "/logo.jpg",
     badge: "/favicon.ico",
     data: {
       link: "/recorrido",

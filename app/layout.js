@@ -13,8 +13,8 @@ export const metadata = {
     title: "SchoolWays",
   },
   icons: {
-    icon: "/logo.svg",
-    apple: "/logo.svg",
+    icon: "/logo.jpg",
+    apple: "/logo.jpg",
   },
 };
 
