@@ -1262,12 +1262,19 @@ function HomeContent() {
     if (AdvancedMarker && map?.getMapId && map.getMapId()) {
       try {
         const content = document.createElement("div");
-        content.className =
-          kind === "user"
-            ? "marker-dot marker-user"
-            : kind === "school"
-              ? "marker-dot marker-school"
-              : "marker-dot marker-stop";
+        if (kind === "user") {
+          content.className = "marker-bus-shell";
+          const image = document.createElement("img");
+          image.src = "/icons/bus.png";
+          image.alt = "";
+          image.className = "marker-bus-image";
+          image.decoding = "async";
+          image.loading = "eager";
+          content.appendChild(image);
+        } else {
+          content.className =
+            kind === "school" ? "marker-dot marker-school" : "marker-dot marker-stop";
+        }
         return new AdvancedMarker({
           map,
           position,
@@ -1283,8 +1290,8 @@ function HomeContent() {
       kind === "user"
         ? {
             url: "/icons/bus.png",
-            scaledSize: new google.maps.Size(26, 26),
-            anchor: new google.maps.Point(13, 13),
+            scaledSize: new google.maps.Size(30, 30),
+            anchor: new google.maps.Point(15, 15),
           }
         : kind === "school"
           ? {
