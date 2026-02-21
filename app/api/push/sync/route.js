@@ -232,6 +232,13 @@ const sendPushMessage = async ({ messaging, db, student, message }) => {
         Urgency: "high",
         TTL: "120",
       },
+      notification: {
+        title: "SchoolWays",
+        body: message,
+        icon: "/logo.jpg",
+        badge: "/favicon.ico",
+        tag: "schoolways-route-alert",
+      },
       fcmOptions: {
         link: "/recorrido",
       },

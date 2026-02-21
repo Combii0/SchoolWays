@@ -21,8 +21,14 @@ firebase.initializeApp(${JSON.stringify(firebaseConfig)});
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
-  const title = payload?.data?.title || "SchoolWays";
-  const body = payload?.data?.body || "Tienes una nueva notificacion de ruta.";
+  const title =
+    payload?.data?.title ||
+    payload?.notification?.title ||
+    "SchoolWays";
+  const body =
+    payload?.data?.body ||
+    payload?.notification?.body ||
+    "Tienes una nueva notificacion de ruta.";
 
   self.registration.showNotification(title, {
     body,

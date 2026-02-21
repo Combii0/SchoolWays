@@ -29,8 +29,14 @@ const bindForegroundNotifications = (messaging) => {
     if (typeof window === "undefined") return;
     if (Notification.permission !== "granted") return;
 
-    const title = payload?.data?.title || "SchoolWays";
-    const body = payload?.data?.body || "Tienes una nueva notificacion de ruta.";
+    const title =
+      payload?.data?.title ||
+      payload?.notification?.title ||
+      "SchoolWays";
+    const body =
+      payload?.data?.body ||
+      payload?.notification?.body ||
+      "Tienes una nueva notificacion de ruta.";
 
     try {
       window.dispatchEvent(
