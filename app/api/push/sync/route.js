@@ -215,7 +215,7 @@ const cleanupInvalidToken = async (db, uid, token) => {
 const sendPushMessage = async ({ messaging, db, student, message }) => {
   const tokens = extractPushTokens(student.profile);
   if (!tokens.length) {
-    return { delivered: false, tokenCount: 0 };
+    return { delivered: false, tokenCount: 0, reason: "no-token" };
   }
 
   const payload = {
@@ -249,7 +249,11 @@ const sendPushMessage = async ({ messaging, db, student, message }) => {
   try {
     response = await messaging.sendEachForMulticast(payload);
   } catch (error) {
-    return { delivered: false, tokenCount: tokens.length };
+    return {
+      delivered: false,
+      tokenCount: tokens.length,
+      reason: error?.code || "send-error",
+    };
   }
 
   if (response.failureCount > 0) {
@@ -268,6 +272,10 @@ const sendPushMessage = async ({ messaging, db, student, message }) => {
   return {
     delivered: response.successCount > 0,
     tokenCount: tokens.length,
+    reason:
+      response.successCount > 0
+        ? "sent"
+        : response.responses.find((item) => !item.success)?.error?.code || "all-failed",
   };
 };
 
@@ -453,12 +461,6 @@ export async function POST(request) {
 
   const institutionCode =
     toText(monitorProfile?.institutionCode) || toText(body?.institutionCode);
-  if (!institutionCode) {
-    return NextResponse.json(
-      { error: "No se pudo resolver el colegio de la monitora" },
-      { status: 400 }
-    );
-  }
 
   const stops = buildStops(body?.stops || []);
   if (!stops.length) {
@@ -476,10 +478,9 @@ export async function POST(request) {
   const changedStop = findChangedStop(body?.changedStop, stops);
   const changedStopStatus = toLowerText(body?.changedStop?.status || changedStop?.status);
 
-  const studentsSnap = await db
-    .collection("users")
-    .where("institutionCode", "==", institutionCode)
-    .get();
+  const studentsSnap = institutionCode
+    ? await db.collection("users").where("institutionCode", "==", institutionCode).get()
+    : await db.collection("users").get();
 
   const studentCandidates = studentsSnap.docs
     .map((item) => {
@@ -497,7 +498,19 @@ export async function POST(request) {
     });
 
   if (!studentCandidates.length) {
-    return NextResponse.json({ ok: true, sent: 0, skipped: 0 }, { status: 200 });
+    return NextResponse.json(
+      {
+        ok: true,
+        sent: 0,
+        skipped: 0,
+        diagnostics: {
+          reason: "no-students-matched",
+          routeId,
+          institutionCode: institutionCode || null,
+        },
+      },
+      { status: 200 }
+    );
   }
 
   const dateKey = getServiceDateKey();
@@ -519,10 +532,20 @@ export async function POST(request) {
   const writes = [];
   let sent = 0;
   let skipped = 0;
+  const diagnostics = {
+    totalStudents: studentCandidates.length,
+    attempted: 0,
+    unmatchedStop: 0,
+    noTrigger: 0,
+    noToken: 0,
+    failedSend: 0,
+    reasons: {},
+  };
 
   for (const student of studentCandidates) {
     const studentStop = resolveStudentStop(student, stops);
     if (!studentStop) {
+      diagnostics.unmatchedStop += 1;
       skipped += 1;
       continue;
     }
@@ -581,12 +604,21 @@ export async function POST(request) {
     }
 
     if (!message || !statePatch) {
+      diagnostics.noTrigger += 1;
       skipped += 1;
       continue;
     }
 
+    diagnostics.attempted += 1;
     const pushResult = await sendPushMessage({ messaging, db, student, message });
     if (!pushResult.delivered) {
+      if (pushResult.reason === "no-token") {
+        diagnostics.noToken += 1;
+      } else {
+        diagnostics.failedSend += 1;
+      }
+      diagnostics.reasons[pushResult.reason || "unknown"] =
+        (diagnostics.reasons[pushResult.reason || "unknown"] || 0) + 1;
       skipped += 1;
       continue;
     }
@@ -616,5 +648,17 @@ export async function POST(request) {
     await Promise.all(writes);
   }
 
-  return NextResponse.json({ ok: true, sent, skipped }, { status: 200 });
+  return NextResponse.json(
+    {
+      ok: true,
+      sent,
+      skipped,
+      diagnostics: {
+        ...diagnostics,
+        routeId,
+        institutionCode: institutionCode || null,
+      },
+    },
+    { status: 200 }
+  );
 }

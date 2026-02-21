@@ -318,6 +318,16 @@ export default function RecorridoPage() {
           setSavingError("Se guardo el paradero, pero fallo el envio de notificaciones.");
         }
         console.error("Push sync failed", payload);
+        return;
+      }
+
+      if (payload?.sent === 0 && payload?.diagnostics?.attempted > 0) {
+        console.warn("Push sync sent 0 notifications", payload);
+        if (eventType === "stop_status_update") {
+          setSavingError(
+            "Se guardo el paradero, pero no se pudo notificar. Revisa permisos de notificaciones y tokens."
+          );
+        }
       }
     } catch (error) {
       if (eventType === "stop_status_update") {

@@ -895,9 +895,13 @@ function HomeContent() {
           stops,
         }),
       });
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
         console.error("Monitor ETA push sync failed", payload);
+        return;
+      }
+      if (payload?.sent === 0 && payload?.diagnostics?.attempted > 0) {
+        console.warn("Monitor ETA push sent 0 notifications", payload);
       }
     } catch (error) {
       console.error("Monitor ETA push sync request failed", error);
