@@ -535,11 +535,12 @@ export default function RecorridoPage() {
       const dateKey = getServiceDateKey();
       const monitorUid = auth.currentUser?.uid || null;
       const isClearing = !status;
-      const roots = ["routes", "rutas"];
-      const writeTasks = [];
+      const dailyRoots = ["routes", "rutas"];
+      let wroteAny = false;
+      let lastError = null;
 
-      routeIds.forEach((candidateRouteId) => {
-        roots.forEach((rootCollection) => {
+      for (const candidateRouteId of routeIds) {
+        for (const rootCollection of dailyRoots) {
           const dailyStopRef = doc(
             db,
             rootCollection,
@@ -549,11 +550,11 @@ export default function RecorridoPage() {
             "stops",
             stopKey
           );
-          if (isClearing) {
-            writeTasks.push(deleteDoc(dailyStopRef));
-          } else {
-            writeTasks.push(
-              setDoc(
+          try {
+            if (isClearing) {
+              await deleteDoc(dailyStopRef);
+            } else {
+              await setDoc(
                 dailyStopRef,
                 {
                   stopId: stopKey,
@@ -567,29 +568,40 @@ export default function RecorridoPage() {
                   updatedAt: serverTimestamp(),
                 },
                 { merge: true }
-              )
-            );
+              );
+            }
+            wroteAny = true;
+          } catch (error) {
+            lastError = error;
           }
+        }
+      }
 
-          const liveRef = doc(db, rootCollection, candidateRouteId, "live", "current");
-          const excludedArrayUpdate =
-            status === STOP_STATUS.MISSED_BUS
-              ? arrayUnion(stopKey)
-              : arrayRemove(stopKey);
-          writeTasks.push(
-            setDoc(
-              liveRef,
-              {
-                excludedStopKeys: excludedArrayUpdate,
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true }
-            )
+      // Live exclusions are only supported under `routes/{routeId}/live/current` by rules.
+      for (const candidateRouteId of routeIds) {
+        const liveRef = doc(db, "routes", candidateRouteId, "live", "current");
+        const excludedArrayUpdate =
+          status === STOP_STATUS.MISSED_BUS ? arrayUnion(stopKey) : arrayRemove(stopKey);
+        try {
+          await setDoc(
+            liveRef,
+            {
+              uid: monitorUid,
+              route: profile.route || null,
+              excludedStopKeys: excludedArrayUpdate,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
           );
-        });
-      });
+          wroteAny = true;
+        } catch (error) {
+          lastError = error;
+        }
+      }
 
-      await Promise.all(writeTasks);
+      if (!wroteAny) {
+        throw lastError || new Error("No se pudo escribir el estado del paradero.");
+      }
 
       const excluded = isStopAbsentStatus(status);
       setDailyStopStatuses((prev) => {

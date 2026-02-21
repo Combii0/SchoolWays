@@ -431,7 +431,7 @@ function HomeContent() {
     }
 
     const dateKey = getServiceDateKey();
-    const roots = ["routes", "rutas"];
+    const roots = ["routes"];
     const sourceMaps = {};
     const unsubscribers = [];
 
