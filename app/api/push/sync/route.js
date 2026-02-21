@@ -225,8 +225,13 @@ const sendPushMessage = async ({ messaging, db, student, message }) => {
       body: message,
       routeId: student.routeId,
       kind: "student-route-update",
+      at: Date.now().toString(),
     },
     webpush: {
+      headers: {
+        Urgency: "high",
+        TTL: "120",
+      },
       fcmOptions: {
         link: "/recorrido",
       },

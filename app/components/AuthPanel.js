@@ -326,11 +326,6 @@ export default function AuthPanel() {
         return;
       }
 
-      if (storedEnabled && storedToken) {
-        pushSyncRef.current = { uid, token: storedToken };
-        return;
-      }
-
       const result = await setupWebPushForUser({
         uid,
         requestPermission: false,

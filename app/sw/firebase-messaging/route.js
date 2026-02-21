@@ -28,6 +28,9 @@ messaging.onBackgroundMessage((payload) => {
     body,
     icon: "/logo.jpg",
     badge: "/favicon.ico",
+    vibrate: [220, 120, 220],
+    renotify: true,
+    tag: "schoolways-route-alert",
     data: {
       link: "/recorrido",
     },

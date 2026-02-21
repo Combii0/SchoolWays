@@ -30,6 +30,9 @@ export default function ForegroundPushIsland() {
       setTitle(nextTitle);
       setBody(nextBody);
       setVisible(true);
+      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+        navigator.vibrate([220, 120, 220]);
+      }
 
       clearTimer();
       hideTimerRef.current = setTimeout(() => {
