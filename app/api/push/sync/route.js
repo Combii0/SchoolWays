@@ -170,6 +170,32 @@ const isInvalidTokenCode = (code) => {
   );
 };
 
+const enqueueInAppNotification = async ({ db, student, message }) => {
+  if (!student?.uid || !message) return { delivered: false };
+  const notificationId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await db
+      .collection("users")
+      .doc(student.uid)
+      .set(
+        {
+          lastRouteNotification: {
+            id: notificationId,
+            title: "SchoolWays",
+            body: message,
+            kind: "student-route-update",
+            routeId: student.routeId || null,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+        },
+        { merge: true }
+      );
+    return { delivered: true };
+  } catch (error) {
+    return { delivered: false };
+  }
+};
+
 const cleanupInvalidToken = async (db, uid, token) => {
   if (!uid || !token) return;
   const userRef = db.collection("users").doc(uid);
@@ -586,6 +612,7 @@ export async function POST(request) {
   const diagnostics = {
     totalStudents: studentCandidates.length,
     attempted: 0,
+    inAppDelivered: 0,
     unmatchedStop: 0,
     noTrigger: 0,
     noToken: 0,
@@ -661,8 +688,12 @@ export async function POST(request) {
     }
 
     diagnostics.attempted += 1;
+    const inAppResult = await enqueueInAppNotification({ db, student, message });
+    if (inAppResult.delivered) {
+      diagnostics.inAppDelivered += 1;
+    }
     const pushResult = await sendPushMessage({ messaging, db, student, message });
-    if (!pushResult.delivered) {
+    if (!pushResult.delivered && !inAppResult.delivered) {
       if (pushResult.reason === "no-token") {
         diagnostics.noToken += 1;
       } else {

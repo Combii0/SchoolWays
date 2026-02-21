@@ -88,6 +88,25 @@ const isMonitorProfile = (profile) => {
   );
 };
 
+const getRouteIdCandidates = ({ profile, routeKey, routeStopsByKey }) => {
+  const candidates = new Set();
+  const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : "";
+  const fromKey = getRouteId(routeNameFromKey);
+  const fromProfile = getRouteId(profile?.route);
+  if (fromKey) candidates.add(fromKey);
+  if (fromProfile) candidates.add(fromProfile);
+
+  if (routeStopsByKey && typeof routeStopsByKey === "object") {
+    Object.keys(routeStopsByKey).forEach((key) => {
+      const routeName = key.includes(":") ? key.split(":").slice(1).join(":") : key;
+      const routeId = getRouteId(routeName);
+      if (routeId) candidates.add(routeId);
+    });
+  }
+
+  return Array.from(candidates);
+};
+
 const toRadians = (value) => (value * Math.PI) / 180;
 
 const distanceMetersBetween = (a, b) => {
@@ -249,9 +268,12 @@ export default function RecorridoPage() {
 
   const resolveRouteIdentity = (currentProfile) => {
     const routeKey = resolveRouteKey(currentProfile);
-    const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
-    const routeId = getRouteId(routeNameFromKey || currentProfile?.route);
-    return { routeKey, routeId };
+    const routeIds = getRouteIdCandidates({
+      profile: currentProfile,
+      routeKey,
+      routeStopsByKey,
+    });
+    return { routeKey, routeId: routeIds[0] || null, routeIds };
   };
 
   const syncRoutePush = async ({ eventType, changedStop = null, stopsOverride = null }) => {
@@ -333,42 +355,46 @@ export default function RecorridoPage() {
       const changedStatus = toLowerText(changedStop?.status);
       const expectsPush =
         eventType === "stop_status_update" && changedStatus === STOP_STATUS.BOARDED;
-
-      if (sent > 0) {
-        setPushSyncInfo(`Notificaciones enviadas: ${payload.sent}.`);
-        setSavingError("");
-      } else {
-        let reason = payload?.diagnostics?.reason || "";
-        if (!reason && noToken > 0) {
-          reason = "sin token web push en estudiantes";
-        } else if (!reason && unmatchedStop > 0) {
-          reason = "el paradero del estudiante no coincide con la ruta";
-        } else if (!reason && noTrigger > 0) {
-          reason = "evento sin regla de notificacion para ese estado";
-        } else if (!reason && failedSend > 0) {
-          reason = "fallo al enviar a Firebase";
-        } else if (!reason) {
-          reason = "sin coincidencias para enviar";
+      if (eventType === "stop_status_update") {
+        if (sent > 0) {
+          setPushSyncInfo(`Notificaciones enviadas: ${payload.sent}.`);
+          setSavingError("");
+        } else if (changedStatus === STOP_STATUS.MISSED_BUS) {
+          // Marking "No asistio" should not be treated as push failure.
+          setPushSyncInfo("");
+          setSavingError("");
+        } else {
+          let reason = payload?.diagnostics?.reason || "";
+          if (!reason && noToken > 0) {
+            reason = "sin token web push en estudiantes";
+          } else if (!reason && unmatchedStop > 0) {
+            reason = "el paradero del estudiante no coincide con la ruta";
+          } else if (!reason && noTrigger > 0) {
+            reason = "evento sin regla de notificacion para ese estado";
+          } else if (!reason && failedSend > 0) {
+            reason = "fallo al enviar a Firebase";
+          } else if (!reason) {
+            reason = "sin coincidencias para enviar";
+          }
+          setPushSyncInfo(`No se envio notificacion (${reason}).`);
         }
-        setPushSyncInfo(`No se envio notificacion (${reason}).`);
-      }
 
-      const shouldWarn = sent === 0 && (attempted > 0 || noToken > 0 || failedSend > 0);
-      if (shouldWarn) {
-        console.warn("Push sync sent 0 notifications", payload);
-      }
+        const shouldWarn = sent === 0 && (attempted > 0 || noToken > 0 || failedSend > 0);
+        if (shouldWarn) {
+          console.warn("Push sync sent 0 notifications", payload);
+        }
 
-      const shouldShowError =
-        sent === 0 &&
-        (noToken > 0 || failedSend > 0 || (expectsPush && attempted > 0));
-      if (shouldShowError) {
-        if (eventType === "stop_status_update") {
+        const shouldShowError =
+          sent === 0 &&
+          changedStatus !== STOP_STATUS.MISSED_BUS &&
+          (noToken > 0 || failedSend > 0 || (expectsPush && attempted > 0));
+        if (shouldShowError) {
           setSavingError(
             "Se guardo el paradero, pero no se pudo notificar. Revisa permisos de notificaciones y tokens."
           );
+        } else {
+          setSavingError("");
         }
-      } else if (eventType === "stop_status_update") {
-        setSavingError("");
       }
     } catch (error) {
       if (eventType === "stop_status_update") {
@@ -443,8 +469,8 @@ export default function RecorridoPage() {
   const persistStopStatus = async ({ stop, status }) => {
     if (!isMonitor || !stop) return;
 
-    const { routeId } = resolveRouteIdentity(profile);
-    if (!routeId) {
+    const { routeId, routeIds } = resolveRouteIdentity(profile);
+    if (!routeId || !routeIds.length) {
       setSavingError("No se pudo identificar la ruta.");
       return;
     }
@@ -460,28 +486,46 @@ export default function RecorridoPage() {
     try {
       const dateKey = getServiceDateKey();
       const monitorUid = auth.currentUser?.uid || null;
-      const dailyStopRef = doc(db, "routes", routeId, "daily", dateKey, "stops", stopKey);
       const isClearing = !status;
+      const roots = ["routes", "rutas"];
+      const writeTasks = [];
 
-      if (isClearing) {
-        await deleteDoc(dailyStopRef);
-      } else {
-        await setDoc(
-          dailyStopRef,
-          {
-            stopId: stopKey,
-            stopTitle: stop.title || null,
-            stopAddress: stop.address || null,
-            status,
-            inasistencia: status === STOP_STATUS.MISSED_BUS,
-            route: profile.route || null,
-            institutionCode: profile.institutionCode || null,
-            monitorUid,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      }
+      routeIds.forEach((candidateRouteId) => {
+        roots.forEach((rootCollection) => {
+          const dailyStopRef = doc(
+            db,
+            rootCollection,
+            candidateRouteId,
+            "daily",
+            dateKey,
+            "stops",
+            stopKey
+          );
+          if (isClearing) {
+            writeTasks.push(deleteDoc(dailyStopRef));
+          } else {
+            writeTasks.push(
+              setDoc(
+                dailyStopRef,
+                {
+                  stopId: stopKey,
+                  stopTitle: stop.title || null,
+                  stopAddress: stop.address || null,
+                  status,
+                  inasistencia: status === STOP_STATUS.MISSED_BUS,
+                  route: profile.route || null,
+                  institutionCode: profile.institutionCode || null,
+                  monitorUid,
+                  updatedAt: serverTimestamp(),
+                },
+                { merge: true }
+              )
+            );
+          }
+        });
+      });
+
+      await Promise.all(writeTasks);
 
       const excluded = isStopAbsentStatus(status);
       setDailyStopStatuses((prev) => {
@@ -718,25 +762,54 @@ export default function RecorridoPage() {
       return;
     }
 
-    const { routeId } = resolveRouteIdentity(profile);
-    if (!routeId) {
+    const { routeIds } = resolveRouteIdentity(profile);
+    if (!routeIds.length) {
       setDailyStopStatuses({});
       return;
     }
 
     const dateKey = getServiceDateKey();
-    const dailyStopsRef = collection(db, "routes", routeId, "daily", dateKey, "stops");
-    const unsubscribe = onSnapshot(
-      dailyStopsRef,
-      (snapshot) => {
-        setDailyStopStatuses(createStopStatusMap(snapshot.docs));
-      },
-      () => {
-        setDailyStopStatuses({});
-      }
-    );
+    const sourceMaps = {};
+    const unsubscribers = [];
+    const roots = ["routes", "rutas"];
 
-    return () => unsubscribe();
+    const mergeAndSet = () => {
+      const merged = {};
+      Object.values(sourceMaps).forEach((mapped) => {
+        Object.assign(merged, mapped);
+      });
+      setDailyStopStatuses(merged);
+    };
+
+    routeIds.forEach((routeId) => {
+      roots.forEach((rootCollection) => {
+        const sourceKey = `${rootCollection}:${routeId}`;
+        const dailyStopsRef = collection(
+          db,
+          rootCollection,
+          routeId,
+          "daily",
+          dateKey,
+          "stops"
+        );
+        const unsubscribe = onSnapshot(
+          dailyStopsRef,
+          (snapshot) => {
+            sourceMaps[sourceKey] = createStopStatusMap(snapshot.docs);
+            mergeAndSet();
+          },
+          () => {
+            sourceMaps[sourceKey] = {};
+            mergeAndSet();
+          }
+        );
+        unsubscribers.push(unsubscribe);
+      });
+    });
+
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
   }, [profile, routeStopsByKey]);
 
   useEffect(() => {

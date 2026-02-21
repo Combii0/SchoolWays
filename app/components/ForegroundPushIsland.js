@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { onAuthStateChanged } from "firebase/auth";
+import { doc, onSnapshot } from "firebase/firestore";
+import { auth, db } from "../lib/firebaseClient";
 
 const HIDE_DELAY_MS = 5200;
 
@@ -9,6 +12,25 @@ export default function ForegroundPushIsland() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const hideTimerRef = useRef(null);
+  const lastNotificationIdRef = useRef("");
+
+  const showToast = (payload = {}) => {
+    const nextTitle =
+      payload?.title && payload.title.toString().trim()
+        ? payload.title.toString().trim()
+        : "SchoolWays";
+    const nextBody =
+      payload?.body && payload.body.toString().trim()
+        ? payload.body.toString().trim()
+        : "Tienes una notificacion nueva.";
+
+    setTitle(nextTitle);
+    setBody(nextBody);
+    setVisible(true);
+    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+      navigator.vibrate([220, 120, 220]);
+    }
+  };
 
   useEffect(() => {
     const clearTimer = () => {
@@ -17,34 +39,85 @@ export default function ForegroundPushIsland() {
       hideTimerRef.current = null;
     };
 
-    const showToast = (event) => {
-      const nextTitle =
-        event?.detail?.title && event.detail.title.toString().trim()
-          ? event.detail.title.toString().trim()
-          : "SchoolWays";
-      const nextBody =
-        event?.detail?.body && event.detail.body.toString().trim()
-          ? event.detail.body.toString().trim()
-          : "Tienes una notificacion nueva.";
-
-      setTitle(nextTitle);
-      setBody(nextBody);
-      setVisible(true);
-      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-        navigator.vibrate([220, 120, 220]);
-      }
-
+    const handleForegroundPushEvent = (event) => {
+      showToast({
+        title: event?.detail?.title,
+        body: event?.detail?.body,
+      });
       clearTimer();
       hideTimerRef.current = setTimeout(() => {
         setVisible(false);
       }, HIDE_DELAY_MS);
     };
 
-    window.addEventListener("schoolways:push-foreground", showToast);
+    window.addEventListener("schoolways:push-foreground", handleForegroundPushEvent);
 
     return () => {
       clearTimer();
-      window.removeEventListener("schoolways:push-foreground", showToast);
+      window.removeEventListener(
+        "schoolways:push-foreground",
+        handleForegroundPushEvent
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    let unsubscribeNotifications = null;
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      if (unsubscribeNotifications) {
+        unsubscribeNotifications();
+        unsubscribeNotifications = null;
+      }
+      lastNotificationIdRef.current = "";
+      if (!currentUser) return;
+
+      let initialized = false;
+      unsubscribeNotifications = onSnapshot(
+        doc(db, "users", currentUser.uid),
+        (snapshot) => {
+          if (!snapshot.exists()) {
+            initialized = true;
+            return;
+          }
+
+          const latest = snapshot.data()?.lastRouteNotification || null;
+          const latestId =
+            latest?.id && latest.id.toString().trim()
+              ? latest.id.toString().trim()
+              : "";
+          if (!latestId) {
+            initialized = true;
+            return;
+          }
+
+          if (!initialized) {
+            initialized = true;
+            lastNotificationIdRef.current = latestId;
+            return;
+          }
+          if (lastNotificationIdRef.current === latestId) return;
+
+          lastNotificationIdRef.current = latestId;
+          showToast({
+            title: latest?.title,
+            body: latest?.body,
+          });
+          if (hideTimerRef.current) {
+            clearTimeout(hideTimerRef.current);
+          }
+          hideTimerRef.current = setTimeout(() => {
+            setVisible(false);
+          }, HIDE_DELAY_MS);
+        },
+        () => null
+      );
+    });
+
+    return () => {
+      if (unsubscribeNotifications) {
+        unsubscribeNotifications();
+      }
+      unsubscribeAuth();
     };
   }, []);
 

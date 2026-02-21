@@ -58,6 +58,25 @@ const isMonitorProfile = (profile) => {
   );
 };
 
+const getRouteIdCandidates = ({ profile, routeKey, routeStopsByKey }) => {
+  const candidates = new Set();
+  const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : "";
+  const fromKey = getRouteId(routeNameFromKey);
+  const fromProfile = getRouteId(profile?.route);
+  if (fromKey) candidates.add(fromKey);
+  if (fromProfile) candidates.add(fromProfile);
+
+  if (routeStopsByKey && typeof routeStopsByKey === "object") {
+    Object.keys(routeStopsByKey).forEach((key) => {
+      const routeName = key.includes(":") ? key.split(":").slice(1).join(":") : key;
+      const routeId = getRouteId(routeName);
+      if (routeId) candidates.add(routeId);
+    });
+  }
+
+  return Array.from(candidates);
+};
+
 const resolveStopStatusEntry = (stopStatusMap, stop) => {
   if (!stopStatusMap || !stop) return null;
   const candidates = [
@@ -349,26 +368,58 @@ function HomeContent() {
     }
 
     const routeKey = resolveRouteKey(profile);
-    const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
-    const routeId = getRouteId(routeNameFromKey || profile.route);
-    if (!routeId) {
+    const routeIds = getRouteIdCandidates({
+      profile,
+      routeKey,
+      routeStopsByKey,
+    });
+    if (!routeIds.length) {
       setDailyStopStatuses({});
       return;
     }
 
     const dateKey = getServiceDateKey();
-    const dailyStopsRef = collection(db, "routes", routeId, "daily", dateKey, "stops");
-    const unsubscribe = onSnapshot(
-      dailyStopsRef,
-      (snapshot) => {
-        setDailyStopStatuses(createStopStatusMap(snapshot.docs));
-      },
-      () => {
-        setDailyStopStatuses({});
-      }
-    );
+    const roots = ["routes", "rutas"];
+    const sourceMaps = {};
+    const unsubscribers = [];
 
-    return () => unsubscribe();
+    const mergeAndSet = () => {
+      const merged = {};
+      Object.values(sourceMaps).forEach((mapped) => {
+        Object.assign(merged, mapped);
+      });
+      setDailyStopStatuses(merged);
+    };
+
+    routeIds.forEach((routeId) => {
+      roots.forEach((rootCollection) => {
+        const sourceKey = `${rootCollection}:${routeId}`;
+        const dailyStopsRef = collection(
+          db,
+          rootCollection,
+          routeId,
+          "daily",
+          dateKey,
+          "stops"
+        );
+        const unsubscribe = onSnapshot(
+          dailyStopsRef,
+          (snapshot) => {
+            sourceMaps[sourceKey] = createStopStatusMap(snapshot.docs);
+            mergeAndSet();
+          },
+          () => {
+            sourceMaps[sourceKey] = {};
+            mergeAndSet();
+          }
+        );
+        unsubscribers.push(unsubscribe);
+      });
+    });
+
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
   }, [profileRouteSignature, routeStopsByKey]);
 
   const getStopCoords = async (stop) => {
@@ -1815,9 +1866,12 @@ function HomeContent() {
     if (!map) return;
 
     const routeKey = resolveRouteKey(profile);
-    const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
-    const routeId = getRouteId(routeNameFromKey || profile.route);
-    if (!routeId) return;
+    const routeIds = getRouteIdCandidates({
+      profile,
+      routeKey,
+      routeStopsByKey,
+    });
+    if (!routeIds.length) return;
 
     const routeStops = routeKey ? routeStopsByKey[routeKey] : null;
     const initFirstStop = async () => {
@@ -1830,21 +1884,30 @@ function HomeContent() {
     };
     void initFirstStop();
 
-    const liveRef = doc(db, "routes", routeId, "live", "current");
-    const unsubscribe = onSnapshot(liveRef, (snap) => {
-      const data = snap.exists() ? snap.data() : null;
-      const lat = parseCoord(data?.lat);
-      const lng = parseCoord(data?.lng);
+    const roots = ["routes", "rutas"];
+    const unsubscribers = [];
 
-      if (lat !== null && lng !== null) {
-        const coords = { lat, lng };
-        updateMarker(window.google, map, coords, { upload: false });
-        void updateEta(coords);
-        return;
-      }
+    routeIds.forEach((routeId) => {
+      roots.forEach((rootCollection) => {
+        const liveRef = doc(db, rootCollection, routeId, "live", "current");
+        const unsubscribe = onSnapshot(liveRef, (snap) => {
+          const data = snap.exists() ? snap.data() : null;
+          const lat = parseCoord(data?.lat);
+          const lng = parseCoord(data?.lng);
+
+          if (lat !== null && lng !== null) {
+            const coords = { lat, lng };
+            updateMarker(window.google, map, coords, { upload: false });
+            void updateEta(coords);
+          }
+        });
+        unsubscribers.push(unsubscribe);
+      });
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
   }, [profile, mapReady, routeStopsByKey]);
 
   useEffect(() => {

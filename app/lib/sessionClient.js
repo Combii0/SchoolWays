@@ -97,23 +97,31 @@ export const claimSingleDeviceSession = async (db, uid) => {
 };
 
 export const keepSessionAlive = async (db, uid) => {
-  const deviceId = getDeviceId();
-  const nowMs = getNow();
-  const userRef = getUserRef(db, uid);
-  const snap = await getDoc(userRef);
-  if (!snap.exists()) return;
-  const activeSession = snap.data()?.activeSession || null;
-  if (activeSession?.deviceId !== deviceId) return;
-  await setDoc(
-    userRef,
-    {
-      activeSession: {
-        ...activeSession,
-        lastSeenAt: nowMs,
+  try {
+    const deviceId = getDeviceId();
+    const nowMs = getNow();
+    const userRef = getUserRef(db, uid);
+    const snap = await getDoc(userRef);
+    if (!snap.exists()) return;
+    const activeSession = snap.data()?.activeSession || null;
+    if (activeSession?.deviceId !== deviceId) return;
+    const userAgent =
+      typeof navigator !== "undefined" ? navigator.userAgent || null : null;
+    await setDoc(
+      userRef,
+      {
+        activeSession: {
+          deviceId,
+          userAgent: activeSession?.userAgent || userAgent,
+          claimedAt: parseMillis(activeSession?.claimedAt) || nowMs,
+          lastSeenAt: nowMs,
+        },
       },
-    },
-    { merge: true }
-  );
+      { merge: true }
+    );
+  } catch (error) {
+    // Keep session heartbeat best-effort to avoid console noise in UI.
+  }
 };
 
 export const releaseSingleDeviceSession = async (db, uid) => {
