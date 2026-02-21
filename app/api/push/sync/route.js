@@ -493,7 +493,6 @@ export async function POST(request) {
     })
     .filter((student) => {
       if (!isStudentProfile(student.profile)) return false;
-      if (student.routeId && student.routeId !== routeId) return false;
       return true;
     });
 

@@ -199,6 +199,7 @@ export default function RecorridoPage() {
   const [editingStopKey, setEditingStopKey] = useState("");
   const [savingStopKey, setSavingStopKey] = useState("");
   const [savingError, setSavingError] = useState("");
+  const [pushSyncInfo, setPushSyncInfo] = useState("");
   const lastFetchRef = useRef(0);
   const geocodedStopsRef = useRef(new Map());
   const geocodingStopsRef = useRef(new Map());
@@ -316,12 +317,24 @@ export default function RecorridoPage() {
       if (!response.ok) {
         if (eventType === "stop_status_update") {
           setSavingError("Se guardo el paradero, pero fallo el envio de notificaciones.");
+          setPushSyncInfo("");
         }
         console.error("Push sync failed", payload);
         return;
       }
 
-      if (payload?.sent === 0 && payload?.diagnostics?.attempted > 0) {
+      if (payload?.sent > 0) {
+        setPushSyncInfo(`Notificaciones enviadas: ${payload.sent}.`);
+        setSavingError("");
+      } else {
+        const reason =
+          payload?.diagnostics?.reason ||
+          (payload?.diagnostics?.noToken > 0 ? "sin token web push en estudiantes" : "") ||
+          "sin coincidencias para enviar";
+        setPushSyncInfo(`No se envio notificacion (${reason}).`);
+      }
+
+      if (payload?.sent === 0) {
         console.warn("Push sync sent 0 notifications", payload);
         if (eventType === "stop_status_update") {
           setSavingError(
@@ -332,6 +345,7 @@ export default function RecorridoPage() {
     } catch (error) {
       if (eventType === "stop_status_update") {
         setSavingError("Se guardo el paradero, pero fallo el envio de notificaciones.");
+        setPushSyncInfo("");
       }
       console.error("Push sync request failed", error);
     } finally {
@@ -517,6 +531,7 @@ export default function RecorridoPage() {
         setEditingStopKey("");
         setSavingStopKey("");
         setSavingError("");
+        setPushSyncInfo("");
         return;
       }
 
@@ -951,6 +966,9 @@ export default function RecorridoPage() {
         </header>
 
         {savingError ? <div className="route-save-error">{savingError}</div> : null}
+        {pushSyncInfo && !savingError ? (
+          <div className="route-save-success">{pushSyncInfo}</div>
+        ) : null}
 
         <div className="route-list">
           {stopEtas.length ? (

@@ -1,4 +1,4 @@
-import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { arrayUnion, doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { app, db } from "./firebaseClient";
 
@@ -139,6 +139,7 @@ export const setupWebPushForUser = async ({
       pushNotifications: {
         web: {
           token,
+          tokens: arrayUnion(token),
           enabled: true,
           updatedAt: serverTimestamp(),
           userAgent:

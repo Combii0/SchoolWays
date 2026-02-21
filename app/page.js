@@ -58,6 +58,23 @@ const isMonitorProfile = (profile) => {
   );
 };
 
+const resolveStopStatusEntry = (stopStatusMap, stop) => {
+  if (!stopStatusMap || !stop) return null;
+  const candidates = [
+    normalizeStopKey(stop),
+    normalizeStopKey({ id: stop?.id }),
+    normalizeStopKey({ key: stop?.key }),
+    normalizeStopKey({ address: stop?.address }),
+    normalizeStopKey({ title: stop?.title }),
+  ].filter(Boolean);
+
+  for (const key of candidates) {
+    const entry = stopStatusMap[key];
+    if (entry) return entry;
+  }
+  return null;
+};
+
 const toRadians = (value) => (value * Math.PI) / 180;
 
 const distanceMetersBetween = (a, b) => {
@@ -832,11 +849,10 @@ function HomeContent() {
 
     const stops = orderedPending.map((stop, index) => {
       const stopKey = normalizeStopKey(stop) || stop.id || `paradero-${index + 1}`;
-      const statusData =
-        dailyStopStatuses[stopKey] ||
-        dailyStopStatuses[normalizeStopKey({ address: stop.address })] ||
-        dailyStopStatuses[normalizeStopKey({ title: stop.title })] ||
-        null;
+      const statusData = resolveStopStatusEntry(dailyStopStatuses, {
+        ...stop,
+        key: stopKey,
+      });
       const legMetrics = sumLegs(legs, 0, index);
       const minutes =
         typeof legMetrics.durationSeconds === "number"
@@ -1469,7 +1485,13 @@ function HomeContent() {
           toLowerText(item?.address) === toLowerText(stopAddress)
       );
       const ownStopKey = normalizeStopKey(matchedRouteStop) || ownAddressKey;
-      const ownStopStatus = ownStopKey ? stopStatusMap[ownStopKey]?.status : null;
+      const ownStopStatus =
+        resolveStopStatusEntry(stopStatusMap, {
+          ...(matchedRouteStop || {}),
+          key: ownStopKey,
+          address: stopAddress,
+          title: "Paradero",
+        })?.status || null;
       const ownStopIsAbsent = isStopAbsentStatus(ownStopStatus);
       if (stopCoords) {
         if (!ownStopIsAbsent) {
@@ -1493,7 +1515,10 @@ function HomeContent() {
       if (routeStops?.length) {
         routeStops.forEach((stop, index) => {
           const stopKey = normalizeStopKey(stop);
-          const stopStatus = stopKey ? stopStatusMap[stopKey]?.status : null;
+          const stopStatus = resolveStopStatusEntry(stopStatusMap, {
+            ...stop,
+            key: stopKey,
+          })?.status;
           if (isStopAbsentStatus(stopStatus)) return;
           stopCandidates.push({
             id: stopKey || stop.id || `paradero-${index + 1}`,

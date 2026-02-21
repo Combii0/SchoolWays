@@ -169,6 +169,16 @@ a {
   font-weight: 600;
 }
 
+.route-save-success {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(5, 150, 105, 0.12);
+  color: #065f46;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .route-item {
   position: relative;
   background: #ffffff;
