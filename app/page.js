@@ -1293,8 +1293,8 @@ function HomeContent() {
       isBusMarker
         ? {
             url: "/icons/bus.png",
-            scaledSize: new google.maps.Size(46, 46),
-            anchor: new google.maps.Point(23, 23),
+            scaledSize: new google.maps.Size(64, 64),
+            anchor: new google.maps.Point(32, 32),
           }
         : kind === "school"
           ? {
