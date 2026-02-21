@@ -386,6 +386,54 @@ const buildPickedUpMessage = (name) => {
   return `${name} ya esta en la ruta; En camino al colegio! :)`;
 };
 
+const hydrateStudentProfileFromCode = async (db, student) => {
+  if (!student || !student.profile) return student;
+
+  const hasStopAddress = Boolean(toText(student.profile?.stopAddress));
+  const studentCode = toText(student.profile?.studentCode);
+  if (hasStopAddress || !studentCode) return student;
+
+  try {
+    const codeSnap = await db.collection("studentCodes").doc(studentCode).get();
+    if (!codeSnap.exists) return student;
+    const codeData = codeSnap.data() || {};
+    const mergedProfile = {
+      ...student.profile,
+      studentName: student.profile.studentName || codeData.studentName || null,
+      stopAddress: student.profile.stopAddress || codeData.stopAddress || null,
+      route: student.profile.route || codeData.route || null,
+      institutionCode:
+        student.profile.institutionCode || codeData.institutionCode || null,
+      institutionName:
+        student.profile.institutionName || codeData.institutionName || null,
+    };
+
+    if (toText(mergedProfile.stopAddress)) {
+      await db
+        .collection("users")
+        .doc(student.uid)
+        .set(
+          {
+            studentName: mergedProfile.studentName || null,
+            stopAddress: mergedProfile.stopAddress || null,
+            route: mergedProfile.route || null,
+            institutionCode: mergedProfile.institutionCode || null,
+            institutionName: mergedProfile.institutionName || null,
+          },
+          { merge: true }
+        );
+    }
+
+    return {
+      ...student,
+      profile: mergedProfile,
+      routeId: normalizeRouteId(mergedProfile?.route),
+    };
+  } catch (error) {
+    return student;
+  }
+};
+
 const isSameStop = (a, b) => {
   if (!a || !b) return false;
   if (a.key && b.key && a.key === b.key) return true;
@@ -482,7 +530,7 @@ export async function POST(request) {
     ? await db.collection("users").where("institutionCode", "==", institutionCode).get()
     : await db.collection("users").get();
 
-  const studentCandidates = studentsSnap.docs
+  const baseStudentCandidates = studentsSnap.docs
     .map((item) => {
       const profile = item.data() || {};
       return {
@@ -495,6 +543,10 @@ export async function POST(request) {
       if (!isStudentProfile(student.profile)) return false;
       return true;
     });
+
+  const studentCandidates = await Promise.all(
+    baseStudentCandidates.map((student) => hydrateStudentProfileFromCode(db, student))
+  );
 
   if (!studentCandidates.length) {
     return NextResponse.json(

@@ -155,6 +155,7 @@ function HomeContent() {
   const routeKeyRef = useRef(null);
   const routeRefreshRef = useRef({ at: 0, signature: "" });
   const monitorPushSyncRef = useRef({ at: 0, signature: "", inFlight: false });
+  const monitorPushWarnRef = useRef({ at: 0, key: "" });
   const geocodedStopsRef = useRef(new Map());
   const geocodingStopsRef = useRef(new Map());
   const lastStopAddressRef = useRef(null);
@@ -916,8 +917,27 @@ function HomeContent() {
         console.error("Monitor ETA push sync failed", payload);
         return;
       }
-      if (payload?.sent === 0 && payload?.diagnostics?.attempted > 0) {
-        console.warn("Monitor ETA push sent 0 notifications", payload);
+      const sent = Number(payload?.sent || 0);
+      const diagnostics = payload?.diagnostics || {};
+      const warnKey = JSON.stringify({
+        noToken: Number(diagnostics?.noToken || 0),
+        failedSend: Number(diagnostics?.failedSend || 0),
+        attempted: Number(diagnostics?.attempted || 0),
+      });
+      const shouldWarn =
+        sent === 0 &&
+        (Number(diagnostics?.noToken || 0) > 0 ||
+          Number(diagnostics?.failedSend || 0) > 0 ||
+          Number(diagnostics?.attempted || 0) > 0);
+      if (shouldWarn) {
+        const nowWarn = Date.now();
+        if (
+          monitorPushWarnRef.current.key !== warnKey ||
+          nowWarn - monitorPushWarnRef.current.at > 120000
+        ) {
+          monitorPushWarnRef.current = { at: nowWarn, key: warnKey };
+          console.warn("Monitor ETA push sent 0 notifications", payload);
+        }
       }
     } catch (error) {
       console.error("Monitor ETA push sync request failed", error);

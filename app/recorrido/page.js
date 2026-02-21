@@ -323,24 +323,52 @@ export default function RecorridoPage() {
         return;
       }
 
-      if (payload?.sent > 0) {
+      const sent = Number(payload?.sent || 0);
+      const diagnostics = payload?.diagnostics || {};
+      const attempted = Number(diagnostics?.attempted || 0);
+      const noToken = Number(diagnostics?.noToken || 0);
+      const failedSend = Number(diagnostics?.failedSend || 0);
+      const noTrigger = Number(diagnostics?.noTrigger || 0);
+      const unmatchedStop = Number(diagnostics?.unmatchedStop || 0);
+      const changedStatus = toLowerText(changedStop?.status);
+      const expectsPush =
+        eventType === "stop_status_update" && changedStatus === STOP_STATUS.BOARDED;
+
+      if (sent > 0) {
         setPushSyncInfo(`Notificaciones enviadas: ${payload.sent}.`);
         setSavingError("");
       } else {
-        const reason =
-          payload?.diagnostics?.reason ||
-          (payload?.diagnostics?.noToken > 0 ? "sin token web push en estudiantes" : "") ||
-          "sin coincidencias para enviar";
+        let reason = payload?.diagnostics?.reason || "";
+        if (!reason && noToken > 0) {
+          reason = "sin token web push en estudiantes";
+        } else if (!reason && unmatchedStop > 0) {
+          reason = "el paradero del estudiante no coincide con la ruta";
+        } else if (!reason && noTrigger > 0) {
+          reason = "evento sin regla de notificacion para ese estado";
+        } else if (!reason && failedSend > 0) {
+          reason = "fallo al enviar a Firebase";
+        } else if (!reason) {
+          reason = "sin coincidencias para enviar";
+        }
         setPushSyncInfo(`No se envio notificacion (${reason}).`);
       }
 
-      if (payload?.sent === 0) {
+      const shouldWarn = sent === 0 && (attempted > 0 || noToken > 0 || failedSend > 0);
+      if (shouldWarn) {
         console.warn("Push sync sent 0 notifications", payload);
+      }
+
+      const shouldShowError =
+        sent === 0 &&
+        (noToken > 0 || failedSend > 0 || (expectsPush && attempted > 0));
+      if (shouldShowError) {
         if (eventType === "stop_status_update") {
           setSavingError(
             "Se guardo el paradero, pero no se pudo notificar. Revisa permisos de notificaciones y tokens."
           );
         }
+      } else if (eventType === "stop_status_update") {
+        setSavingError("");
       }
     } catch (error) {
       if (eventType === "stop_status_update") {
