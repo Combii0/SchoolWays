@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import {
+  arrayRemove,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -105,6 +107,52 @@ const getRouteIdCandidates = ({ profile, routeKey, routeStopsByKey }) => {
   }
 
   return Array.from(candidates);
+};
+
+const toMillis = (value) => {
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") {
+    const millis = value.toMillis();
+    return Number.isFinite(millis) ? millis : 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const mergeStatusMaps = (maps = []) => {
+  const merged = {};
+  maps.forEach((mapped) => {
+    if (!mapped || typeof mapped !== "object") return;
+    Object.entries(mapped).forEach(([key, entry]) => {
+      if (!entry || typeof entry !== "object") return;
+      const current = merged[key];
+      if (!current) {
+        merged[key] = entry;
+        return;
+      }
+
+      const currentAbsent =
+        isStopAbsentStatus(current?.status) || current?.inasistencia === true;
+      const incomingAbsent =
+        isStopAbsentStatus(entry?.status) || entry?.inasistencia === true;
+
+      if (incomingAbsent && !currentAbsent) {
+        merged[key] = entry;
+        return;
+      }
+      if (currentAbsent && !incomingAbsent) {
+        return;
+      }
+
+      const incomingMillis = toMillis(entry?.updatedAt);
+      const currentMillis = toMillis(current?.updatedAt);
+      if (incomingMillis >= currentMillis) {
+        merged[key] = entry;
+      }
+    });
+  });
+  return merged;
 };
 
 const toRadians = (value) => (value * Math.PI) / 180;
@@ -522,6 +570,22 @@ export default function RecorridoPage() {
               )
             );
           }
+
+          const liveRef = doc(db, rootCollection, candidateRouteId, "live", "current");
+          const excludedArrayUpdate =
+            status === STOP_STATUS.MISSED_BUS
+              ? arrayUnion(stopKey)
+              : arrayRemove(stopKey);
+          writeTasks.push(
+            setDoc(
+              liveRef,
+              {
+                excludedStopKeys: excludedArrayUpdate,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            )
+          );
         });
       });
 
@@ -774,11 +838,7 @@ export default function RecorridoPage() {
     const roots = ["routes", "rutas"];
 
     const mergeAndSet = () => {
-      const merged = {};
-      Object.values(sourceMaps).forEach((mapped) => {
-        Object.assign(merged, mapped);
-      });
-      setDailyStopStatuses(merged);
+      setDailyStopStatuses(mergeStatusMaps(Object.values(sourceMaps)));
     };
 
     routeIds.forEach((routeId) => {

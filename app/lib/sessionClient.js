@@ -102,9 +102,9 @@ export const keepSessionAlive = async (db, uid) => {
     const nowMs = getNow();
     const userRef = getUserRef(db, uid);
     const snap = await getDoc(userRef);
-    if (!snap.exists()) return;
+    if (!snap.exists()) return false;
     const activeSession = snap.data()?.activeSession || null;
-    if (activeSession?.deviceId !== deviceId) return;
+    if (activeSession?.deviceId !== deviceId) return false;
     const userAgent =
       typeof navigator !== "undefined" ? navigator.userAgent || null : null;
     await setDoc(
@@ -119,8 +119,10 @@ export const keepSessionAlive = async (db, uid) => {
       },
       { merge: true }
     );
+    return true;
   } catch (error) {
     // Keep session heartbeat best-effort to avoid console noise in UI.
+    return false;
   }
 };
 

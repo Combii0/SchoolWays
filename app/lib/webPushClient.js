@@ -1,6 +1,5 @@
-import { arrayUnion, doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
-import { app, db } from "./firebaseClient";
+import { app, auth } from "./firebaseClient";
 
 let onMessageBound = false;
 
@@ -132,23 +131,32 @@ export const setupWebPushForUser = async ({
     return { ok: true, token, wrote: false };
   }
 
-  const userRef = doc(db, "users", uid);
-  await setDoc(
-    userRef,
-    {
-      pushNotifications: {
-        web: {
-          token,
-          tokens: arrayUnion(token),
-          enabled: true,
-          updatedAt: serverTimestamp(),
-          userAgent:
-            typeof navigator !== "undefined" ? navigator.userAgent || null : null,
-        },
-      },
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.uid !== uid) {
+    return { ok: false, reason: "auth-mismatch" };
+  }
+
+  const idToken = await currentUser.getIdToken().catch(() => "");
+  if (!idToken) {
+    return { ok: false, reason: "id-token-failed" };
+  }
+
+  const registerResponse = await fetch("/api/push/register", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
     },
-    { merge: true }
-  );
+    body: JSON.stringify({
+      token,
+      userAgent:
+        typeof navigator !== "undefined" ? navigator.userAgent || null : null,
+    }),
+  }).catch(() => null);
+
+  if (!registerResponse?.ok) {
+    return { ok: false, reason: "register-failed" };
+  }
 
   return { ok: true, token, wrote: true };
 };

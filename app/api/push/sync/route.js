@@ -661,12 +661,10 @@ export async function POST(request) {
     ) {
       const sameStop = isSameStop(studentStop, changedStop);
       if (sameStop) {
-        if (!state.pickedUpSent) {
-          message = buildPickedUpMessage(name);
-          statePatch = {
-            pickedUpSent: true,
-          };
-        }
+        message = buildPickedUpMessage(name);
+        statePatch = {
+          pickedUpSent: true,
+        };
       } else if (!isMissed && !isBoarded && studentStop.order > changedStop.order) {
         const remainingStops = studentStop.order - changedStop.order;
         if (

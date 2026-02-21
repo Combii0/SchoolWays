@@ -226,7 +226,12 @@ export default function AuthPanel() {
         clearInterval(heartbeatRef.current);
       }
       heartbeatRef.current = setInterval(() => {
-        void keepSessionAlive(db, currentUser.uid);
+        void keepSessionAlive(db, currentUser.uid).then((ok) => {
+          if (ok) return;
+          if (!heartbeatRef.current) return;
+          clearInterval(heartbeatRef.current);
+          heartbeatRef.current = null;
+        });
       }, SESSION_HEARTBEAT_MS);
 
       if (userDocUnsubRef.current) {
@@ -332,7 +337,13 @@ export default function AuthPanel() {
         existingToken: storedToken,
         existingEnabled: storedEnabled,
       });
-      if (cancelled || !result?.ok) return;
+      if (cancelled) return;
+      if (!result?.ok) {
+        if (result?.reason === "register-failed" || result?.reason === "id-token-failed") {
+          setShowPushBanner(true);
+        }
+        return;
+      }
 
       if (pushSyncRef.current.uid === uid && pushSyncRef.current.token === result.token) {
         return;
@@ -394,6 +405,17 @@ export default function AuthPanel() {
       }
       if (result?.reason === "missing-vapid") {
         setPushMessage("Falta configurar NEXT_PUBLIC_FIREBASE_VAPID_KEY en Vercel.");
+        return;
+      }
+      if (
+        result?.reason === "register-failed" ||
+        result?.reason === "id-token-failed" ||
+        result?.reason === "auth-mismatch"
+      ) {
+        setPushMessage(
+          "No se pudo registrar el token de notificaciones en la cuenta. Intenta cerrar sesion y volver a entrar."
+        );
+        setShowPushBanner(true);
         return;
       }
 

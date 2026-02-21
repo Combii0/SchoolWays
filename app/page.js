@@ -94,6 +94,52 @@ const resolveStopStatusEntry = (stopStatusMap, stop) => {
   return null;
 };
 
+const toMillis = (value) => {
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") {
+    const millis = value.toMillis();
+    return Number.isFinite(millis) ? millis : 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const mergeStatusMaps = (maps = []) => {
+  const merged = {};
+  maps.forEach((mapped) => {
+    if (!mapped || typeof mapped !== "object") return;
+    Object.entries(mapped).forEach(([key, entry]) => {
+      if (!entry || typeof entry !== "object") return;
+      const current = merged[key];
+      if (!current) {
+        merged[key] = entry;
+        return;
+      }
+
+      const currentAbsent =
+        isStopAbsentStatus(current?.status) || current?.inasistencia === true;
+      const incomingAbsent =
+        isStopAbsentStatus(entry?.status) || entry?.inasistencia === true;
+
+      if (incomingAbsent && !currentAbsent) {
+        merged[key] = entry;
+        return;
+      }
+      if (currentAbsent && !incomingAbsent) {
+        return;
+      }
+
+      const incomingMillis = toMillis(entry?.updatedAt);
+      const currentMillis = toMillis(current?.updatedAt);
+      if (incomingMillis >= currentMillis) {
+        merged[key] = entry;
+      }
+    });
+  });
+  return merged;
+};
+
 const toRadians = (value) => (value * Math.PI) / 180;
 
 const distanceMetersBetween = (a, b) => {
@@ -175,6 +221,7 @@ function HomeContent() {
   const routeRefreshRef = useRef({ at: 0, signature: "" });
   const monitorPushSyncRef = useRef({ at: 0, signature: "", inFlight: false });
   const monitorPushWarnRef = useRef({ at: 0, key: "" });
+  const liveExcludedBySourceRef = useRef({});
   const geocodedStopsRef = useRef(new Map());
   const geocodingStopsRef = useRef(new Map());
   const lastStopAddressRef = useRef(null);
@@ -197,6 +244,7 @@ function HomeContent() {
   const [etaTitle, setEtaTitle] = useState("Llegada");
   const [routeStopsByKey, setRouteStopsByKey] = useState({});
   const [dailyStopStatuses, setDailyStopStatuses] = useState({});
+  const [liveExcludedStopKeys, setLiveExcludedStopKeys] = useState([]);
   const userDocUnsubRef = useRef(null);
   const profileRouteSignature = profile
     ? [
@@ -309,6 +357,8 @@ function HomeContent() {
       setEtaDistanceKm(null);
       setEtaTitle("Llegada");
       setDailyStopStatuses({});
+      setLiveExcludedStopKeys([]);
+      liveExcludedBySourceRef.current = {};
       stopReadyRef.current = false;
       schoolReadyRef.current = !SHOW_SCHOOL_MARKER;
       lastStopAddressRef.current = null;
@@ -339,6 +389,8 @@ function HomeContent() {
     setEtaDistanceKm(null);
     setEtaTitle("Llegada");
     setDailyStopStatuses({});
+    setLiveExcludedStopKeys([]);
+    liveExcludedBySourceRef.current = {};
     resolvedRouteStopsRef.current = [];
     schoolCoordsRef.current = null;
     schoolAddressRef.current = null;
@@ -384,11 +436,7 @@ function HomeContent() {
     const unsubscribers = [];
 
     const mergeAndSet = () => {
-      const merged = {};
-      Object.values(sourceMaps).forEach((mapped) => {
-        Object.assign(merged, mapped);
-      });
-      setDailyStopStatuses(merged);
+      setDailyStopStatuses(mergeStatusMaps(Object.values(sourceMaps)));
     };
 
     routeIds.forEach((routeId) => {
@@ -1544,6 +1592,13 @@ function HomeContent() {
 
       const routeKey = resolveRouteKey(profile);
       const routeStops = routeKey ? routeStopsByKey[routeKey] : null;
+      const liveExcludedSet = new Set(
+        liveExcludedStopKeys.map((value) =>
+          value === null || value === undefined
+            ? ""
+            : value.toString().trim().toLowerCase()
+        )
+      );
       // no logging
       const stopCandidates = [];
       const ownAddressKey = normalizeStopKey({
@@ -1563,7 +1618,10 @@ function HomeContent() {
           address: stopAddress,
           title: "Paradero",
         })?.status || null;
-      const ownStopIsAbsent = isStopAbsentStatus(ownStopStatus);
+      const ownStopIsLiveExcluded = ownStopKey
+        ? liveExcludedSet.has(ownStopKey.toLowerCase())
+        : false;
+      const ownStopIsAbsent = isStopAbsentStatus(ownStopStatus) || ownStopIsLiveExcluded;
       if (stopCoords) {
         if (!ownStopIsAbsent) {
           stopCandidates.push({
@@ -1586,6 +1644,7 @@ function HomeContent() {
       if (routeStops?.length) {
         routeStops.forEach((stop, index) => {
           const stopKey = normalizeStopKey(stop);
+          if (stopKey && liveExcludedSet.has(stopKey.toLowerCase())) return;
           const stopStatus = resolveStopStatusEntry(stopStatusMap, {
             ...stop,
             key: stopKey,
@@ -1848,7 +1907,7 @@ function HomeContent() {
     if (mapInstanceRef.current && window.google?.maps) {
       window.google.maps.event.trigger(mapInstanceRef.current, "resize");
     }
-  }, [profile, mapReady, routeStopsByKey, dailyStopStatuses]);
+  }, [profile, mapReady, routeStopsByKey, dailyStopStatuses, liveExcludedStopKeys]);
 
   useEffect(() => {
     if (!profile || !mapReady) return;
@@ -1889,11 +1948,27 @@ function HomeContent() {
 
     routeIds.forEach((routeId) => {
       roots.forEach((rootCollection) => {
+        const sourceKey = `${rootCollection}:${routeId}`;
         const liveRef = doc(db, rootCollection, routeId, "live", "current");
         const unsubscribe = onSnapshot(liveRef, (snap) => {
           const data = snap.exists() ? snap.data() : null;
           const lat = parseCoord(data?.lat);
           const lng = parseCoord(data?.lng);
+          const excluded = Array.isArray(data?.excludedStopKeys)
+            ? data.excludedStopKeys
+                .map((value) =>
+                  value === null || value === undefined
+                    ? ""
+                    : value.toString().trim().toLowerCase()
+                )
+                .filter(Boolean)
+            : [];
+
+          liveExcludedBySourceRef.current[sourceKey] = excluded;
+          const mergedExcluded = Array.from(
+            new Set(Object.values(liveExcludedBySourceRef.current).flat())
+          );
+          setLiveExcludedStopKeys(mergedExcluded);
 
           if (lat !== null && lng !== null) {
             const coords = { lat, lng };
@@ -1907,12 +1982,21 @@ function HomeContent() {
 
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
+      liveExcludedBySourceRef.current = {};
+      setLiveExcludedStopKeys([]);
     };
   }, [profile, mapReady, routeStopsByKey]);
 
   useEffect(() => {
     updateRouteMarkers();
-  }, [profile, institutionAddress, institutionCoords, routeStopsByKey, dailyStopStatuses]);
+  }, [
+    profile,
+    institutionAddress,
+    institutionCoords,
+    routeStopsByKey,
+    dailyStopStatuses,
+    liveExcludedStopKeys,
+  ]);
 
   useEffect(() => {
     if (!profile) return;
@@ -1934,7 +2018,14 @@ function HomeContent() {
       }
     }, 4000);
     return () => clearInterval(interval);
-  }, [profile, institutionAddress, institutionCoords, routeStopsByKey, dailyStopStatuses]);
+  }, [
+    profile,
+    institutionAddress,
+    institutionCoords,
+    routeStopsByKey,
+    dailyStopStatuses,
+    liveExcludedStopKeys,
+  ]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
