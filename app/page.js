@@ -44,6 +44,11 @@ const ROUTE_GRADIENT_START = { r: 113, g: 210, b: 255 };
 const ROUTE_GRADIENT_END = { r: 34, g: 232, b: 188 };
 const MAX_GRADIENT_SEGMENTS = 96;
 const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
+const GEOLOCATION_OPTIONS = {
+  enableHighAccuracy: true,
+  maximumAge: 2000,
+  timeout: 10000,
+};
 const toLowerText = (value) =>
   value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
 
@@ -222,6 +227,7 @@ function HomeContent() {
   const monitorPushSyncRef = useRef({ at: 0, signature: "", inFlight: false });
   const monitorPushWarnRef = useRef({ at: 0, key: "" });
   const liveExcludedBySourceRef = useRef({});
+  const liveLocationBySourceRef = useRef({});
   const geocodedStopsRef = useRef(new Map());
   const geocodingStopsRef = useRef(new Map());
   const lastStopAddressRef = useRef(null);
@@ -359,6 +365,7 @@ function HomeContent() {
       setDailyStopStatuses({});
       setLiveExcludedStopKeys([]);
       liveExcludedBySourceRef.current = {};
+      liveLocationBySourceRef.current = {};
       stopReadyRef.current = false;
       schoolReadyRef.current = !SHOW_SCHOOL_MARKER;
       lastStopAddressRef.current = null;
@@ -391,6 +398,7 @@ function HomeContent() {
     setDailyStopStatuses({});
     setLiveExcludedStopKeys([]);
     liveExcludedBySourceRef.current = {};
+    liveLocationBySourceRef.current = {};
     resolvedRouteStopsRef.current = [];
     schoolCoordsRef.current = null;
     schoolAddressRef.current = null;
@@ -519,21 +527,28 @@ function HomeContent() {
       lastUploadRef.current = now;
 
       const routeKey = resolveRouteKey(currentProfile);
-      const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : null;
-      const routeId = getRouteId(routeNameFromKey || currentProfile.route);
-      if (!routeId) return;
+      const routeIds = getRouteIdCandidates({
+        profile: currentProfile,
+        routeKey,
+        routeStopsByKey,
+      });
+      if (!routeIds.length) return;
 
-      const liveRef = doc(db, "routes", routeId, "live", "current");
-      await setDoc(
-        liveRef,
-        {
-          uid: currentUser.uid,
-          route: currentProfile.route,
-          lat: coords.lat,
-          lng: coords.lng,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
+      await Promise.allSettled(
+        routeIds.map((routeId) => {
+          const liveRef = doc(db, "routes", routeId, "live", "current");
+          return setDoc(
+            liveRef,
+            {
+              uid: currentUser.uid,
+              route: currentProfile.route,
+              lat: coords.lat,
+              lng: coords.lng,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        })
       );
     } catch (err) {
       // ignore upload errors to avoid interrupting location updates
@@ -852,7 +867,7 @@ function HomeContent() {
           return;
         }
       },
-      { enableHighAccuracy: false, maximumAge: 5000, timeout: 12000 }
+      GEOLOCATION_OPTIONS
     );
 
     watchIdRef.current = navigator.geolocation.watchPosition(
@@ -894,7 +909,7 @@ function HomeContent() {
           locationRetryAfterRef.current = Date.now() + 30 * 1000;
         }
       },
-      { enableHighAccuracy: false, maximumAge: 5000, timeout: 12000 }
+      GEOLOCATION_OPTIONS
     );
     hasActiveLocationWatchRef.current = true;
   };
@@ -1943,46 +1958,81 @@ function HomeContent() {
     };
     void initFirstStop();
 
-    const roots = ["routes", "rutas"];
+    const roots = ["routes"];
     const unsubscribers = [];
+
+    const applyLivePayload = (sourceKey, data) => {
+      const lat = parseCoord(data?.lat);
+      const lng = parseCoord(data?.lng);
+      const excluded = Array.isArray(data?.excludedStopKeys)
+        ? data.excludedStopKeys
+            .map((value) =>
+              value === null || value === undefined
+                ? ""
+                : value.toString().trim().toLowerCase()
+            )
+            .filter(Boolean)
+        : [];
+
+      liveExcludedBySourceRef.current[sourceKey] = excluded;
+      const mergedExcluded = Array.from(
+        new Set(Object.values(liveExcludedBySourceRef.current).flat())
+      );
+      setLiveExcludedStopKeys(mergedExcluded);
+
+      if (lat === null || lng === null) {
+        delete liveLocationBySourceRef.current[sourceKey];
+        return;
+      }
+
+      liveLocationBySourceRef.current[sourceKey] = {
+        lat,
+        lng,
+        updatedAt: toMillis(data?.updatedAt),
+      };
+
+      const latestLocation = Object.values(liveLocationBySourceRef.current)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+      if (!latestLocation) return;
+
+      const coords = { lat: latestLocation.lat, lng: latestLocation.lng };
+      updateMarker(window.google, map, coords, { upload: false });
+      void updateEta(coords);
+    };
 
     routeIds.forEach((routeId) => {
       roots.forEach((rootCollection) => {
         const sourceKey = `${rootCollection}:${routeId}`;
         const liveRef = doc(db, rootCollection, routeId, "live", "current");
-        const unsubscribe = onSnapshot(liveRef, (snap) => {
-          const data = snap.exists() ? snap.data() : null;
-          const lat = parseCoord(data?.lat);
-          const lng = parseCoord(data?.lng);
-          const excluded = Array.isArray(data?.excludedStopKeys)
-            ? data.excludedStopKeys
-                .map((value) =>
-                  value === null || value === undefined
-                    ? ""
-                    : value.toString().trim().toLowerCase()
-                )
-                .filter(Boolean)
-            : [];
-
-          liveExcludedBySourceRef.current[sourceKey] = excluded;
-          const mergedExcluded = Array.from(
-            new Set(Object.values(liveExcludedBySourceRef.current).flat())
-          );
-          setLiveExcludedStopKeys(mergedExcluded);
-
-          if (lat !== null && lng !== null) {
-            const coords = { lat, lng };
-            updateMarker(window.google, map, coords, { upload: false });
-            void updateEta(coords);
-          }
-        });
+        const unsubscribe = onSnapshot(
+          liveRef,
+          (snap) => {
+            applyLivePayload(sourceKey, snap.exists() ? snap.data() : null);
+          },
+          () => null
+        );
         unsubscribers.push(unsubscribe);
       });
     });
 
+    const pollIntervalId = window.setInterval(async () => {
+      const fetches = routeIds.map(async (routeId) => {
+        const sourceKey = `routes:${routeId}`;
+        try {
+          const snap = await getDoc(doc(db, "routes", routeId, "live", "current"));
+          applyLivePayload(sourceKey, snap.exists() ? snap.data() : null);
+        } catch (error) {
+          // ignore polling errors; realtime listeners remain primary source
+        }
+      });
+      await Promise.allSettled(fetches);
+    }, 5000);
+
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
+      clearInterval(pollIntervalId);
       liveExcludedBySourceRef.current = {};
+      liveLocationBySourceRef.current = {};
       setLiveExcludedStopKeys([]);
     };
   }, [profile, mapReady, routeStopsByKey]);
