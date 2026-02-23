@@ -149,10 +149,14 @@ export default function LogsPage() {
 
     window.addEventListener(LOG_EVENT_NAME, handleIncomingLog);
     window.addEventListener("storage", handleStorageUpdate);
+    const pollId = window.setInterval(() => {
+      setLogs(readConsoleLogs());
+    }, 5000);
 
     return () => {
       window.removeEventListener(LOG_EVENT_NAME, handleIncomingLog);
       window.removeEventListener("storage", handleStorageUpdate);
+      window.clearInterval(pollId);
     };
   }, []);
 

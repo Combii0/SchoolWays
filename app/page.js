@@ -44,7 +44,6 @@ const ROUTE_GRADIENT_START = { r: 113, g: 210, b: 255 };
 const ROUTE_GRADIENT_END = { r: 34, g: 232, b: 188 };
 const MAX_GRADIENT_SEGMENTS = 96;
 const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
-const LOCATION_UPLOAD_INTERVAL_MS = 5000;
 const GEOLOCATION_OPTIONS = {
   enableHighAccuracy: true,
   maximumAge: 2000,
@@ -61,22 +60,6 @@ const isMonitorProfile = (profile) => {
     role === "monitora" ||
     accountType === "monitor" ||
     accountType === "monitora"
-  );
-};
-
-const logLiveCoords = (source, position) => {
-  const lat = Number(position?.coords?.latitude);
-  const lng = Number(position?.coords?.longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-  const accuracy = Number(position?.coords?.accuracy);
-  const sentAt = new Date().toISOString();
-  const reportedAtMs = Number(position?.timestamp);
-  const reportedAt = Number.isFinite(reportedAtMs)
-    ? new Date(reportedAtMs).toISOString()
-    : "unknown";
-  const accuracyText = Number.isFinite(accuracy) ? ` +/-${Math.round(accuracy)}m` : "";
-  console.log(
-    `[SchoolWays GPS][${source}] sentAt=${sentAt} reportedAt=${reportedAt} lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}${accuracyText}`
   );
 };
 
@@ -1948,57 +1931,6 @@ function HomeContent() {
       return;
     }
     stopLocationWatch();
-  }, [profile, mapReady]);
-
-  useEffect(() => {
-    if (!profile || !mapReady || !isMonitorProfile(profile)) return;
-    if (!("geolocation" in navigator)) return;
-
-    let cancelled = false;
-    const tick = () => {
-      const map = mapInstanceRef.current;
-      if (!map || !window.google) return;
-
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          if (cancelled) return;
-          logLiveCoords("5s-tick", position);
-          locationErrorCountRef.current = 0;
-          locationRetryAfterRef.current = 0;
-          const coords = {
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-          };
-          updateMarker(window.google, map, coords, { upload: true });
-          void updateEta(coords);
-
-          if (!accuracyCircleRef.current) {
-            accuracyCircleRef.current = new window.google.maps.Circle({
-              map,
-              center: coords,
-              radius: position.coords.accuracy || 0,
-              fillColor: "#1a73e8",
-              fillOpacity: 0.15,
-              strokeColor: "#1a73e8",
-              strokeOpacity: 0.3,
-              strokeWeight: 1,
-            });
-          } else {
-            accuracyCircleRef.current.setCenter(coords);
-            accuracyCircleRef.current.setRadius(position.coords.accuracy || 0);
-          }
-        },
-        () => null,
-        GEOLOCATION_OPTIONS
-      );
-    };
-
-    tick();
-    const intervalId = window.setInterval(tick, LOCATION_UPLOAD_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
   }, [profile, mapReady]);
 
   useEffect(() => {

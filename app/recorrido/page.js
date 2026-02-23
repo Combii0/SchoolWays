@@ -34,7 +34,6 @@ import {
 } from "../lib/routeDailyStatus";
 
 const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
-const LOCATION_UPLOAD_INTERVAL_MS = 5000;
 const GEOLOCATION_OPTIONS = {
   enableHighAccuracy: true,
   maximumAge: 2000,
@@ -290,9 +289,7 @@ export default function RecorridoPage() {
   const [savingError, setSavingError] = useState("");
   const [pushSyncInfo, setPushSyncInfo] = useState("");
   const lastFetchRef = useRef(0);
-  const lastLocationUploadRef = useRef(0);
   const locationWatchIdRef = useRef(null);
-  const profileRef = useRef(null);
   const geocodedStopsRef = useRef(new Map());
   const geocodingStopsRef = useRef(new Map());
   const pushSyncRef = useRef({ at: 0, signature: "", inFlight: false });
@@ -302,10 +299,6 @@ export default function RecorridoPage() {
 
   const resolveRouteKey = (currentProfile) =>
     resolveRouteKeyFromStops(currentProfile, routeStopsByKey);
-
-  useEffect(() => {
-    profileRef.current = profile;
-  }, [profile]);
 
   const getStopCoords = async (stop) => {
     if (!stop) return null;
@@ -351,36 +344,6 @@ export default function RecorridoPage() {
       routeStopsByKey,
     });
     return { routeKey, routeId: routeIds[0] || null, routeIds };
-  };
-
-  const maybeUploadMonitorLocation = async (coords, currentProfileOverride = null) => {
-    const currentUser = auth.currentUser;
-    const currentProfile = currentProfileOverride || profileRef.current;
-    if (!currentUser || !currentProfile || !isMonitorProfile(currentProfile)) return;
-
-    const now = Date.now();
-    if (now - lastLocationUploadRef.current < 5000) return;
-    lastLocationUploadRef.current = now;
-
-    const { routeIds } = resolveRouteIdentity(currentProfile);
-    if (!Array.isArray(routeIds) || !routeIds.length) return;
-
-    await Promise.allSettled(
-      routeIds.map((routeId) => {
-        const liveRef = doc(db, "routes", routeId, "live", "current");
-        return setDoc(
-          liveRef,
-          {
-            uid: currentUser.uid,
-            route: currentProfile.route || "",
-            lat: coords.lat,
-            lng: coords.lng,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      })
-    );
   };
 
   const syncRoutePush = async ({ eventType, changedStop = null, stopsOverride = null }) => {
@@ -1006,41 +969,22 @@ export default function RecorridoPage() {
     if (!("geolocation" in navigator)) return;
 
     let cancelled = false;
-    const onPosition = (position, options = {}) => {
+    const onPosition = (position) => {
       if (cancelled) return;
       const lat = Number(position?.coords?.latitude);
       const lng = Number(position?.coords?.longitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
       const coords = { lat, lng };
       setBusCoords(coords);
-      if (options.logSource) {
-        logLiveCoords(options.logSource, position);
-      }
-      if (options.upload) {
-        void maybeUploadMonitorLocation(coords, profile);
-      }
+      logLiveCoords("monitor-watchPosition", position);
     };
 
-    const sendTick = () => {
-      navigator.geolocation.getCurrentPosition(
-        (position) => onPosition(position, { upload: true, logSource: "monitor-5s-tick" }),
-        () => null,
-        GEOLOCATION_OPTIONS
-      );
-    };
-
-    sendTick();
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => onPosition(position, { upload: false }),
-      () => null,
-      GEOLOCATION_OPTIONS
-    );
-    const intervalId = window.setInterval(sendTick, LOCATION_UPLOAD_INTERVAL_MS);
+    navigator.geolocation.getCurrentPosition(onPosition, () => null, GEOLOCATION_OPTIONS);
+    const watchId = navigator.geolocation.watchPosition(onPosition, () => null, GEOLOCATION_OPTIONS);
     locationWatchIdRef.current = watchId;
 
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
       if (watchId !== null && "geolocation" in navigator) {
         navigator.geolocation.clearWatch(watchId);
       }

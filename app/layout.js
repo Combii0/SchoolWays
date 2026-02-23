@@ -2,6 +2,7 @@ import "./globals.css";
 import FooterNav from "./components/FooterNav";
 import ForegroundPushIsland from "./components/ForegroundPushIsland";
 import ConsoleBridge from "./components/ConsoleBridge";
+import LiveLocationTicker from "./components/LiveLocationTicker";
 
 export const metadata = {
   title: "SchoolWays",
@@ -31,6 +32,7 @@ export default function RootLayout({ children }) {
       <body>
         {children}
         <ConsoleBridge />
+        <LiveLocationTicker />
         <ForegroundPushIsland />
         <FooterNav />
       </body>
