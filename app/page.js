@@ -63,6 +63,18 @@ const isMonitorProfile = (profile) => {
   );
 };
 
+const logLiveCoords = (source, position) => {
+  const lat = Number(position?.coords?.latitude);
+  const lng = Number(position?.coords?.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  const accuracy = Number(position?.coords?.accuracy);
+  const now = new Date().toISOString();
+  const accuracyText = Number.isFinite(accuracy) ? ` +/-${Math.round(accuracy)}m` : "";
+  console.log(
+    `[SchoolWays GPS][${source}] ${now} lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}${accuracyText}`
+  );
+};
+
 const getRouteIdCandidates = ({ profile, routeKey, routeStopsByKey }) => {
   const candidates = new Set();
   const routeNameFromKey = routeKey ? routeKey.split(":").slice(1).join(":") : "";
@@ -835,6 +847,7 @@ function HomeContent() {
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        logLiveCoords("getCurrentPosition", position);
         locationErrorCountRef.current = 0;
         locationRetryAfterRef.current = 0;
         const coords = {
@@ -872,6 +885,7 @@ function HomeContent() {
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
+        logLiveCoords("watchPosition", position);
         hasActiveLocationWatchRef.current = true;
         locationErrorCountRef.current = 0;
         locationRetryAfterRef.current = 0;

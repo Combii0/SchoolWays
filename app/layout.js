@@ -1,6 +1,7 @@
 import "./globals.css";
 import FooterNav from "./components/FooterNav";
 import ForegroundPushIsland from "./components/ForegroundPushIsland";
+import ConsoleBridge from "./components/ConsoleBridge";
 
 export const metadata = {
   title: "SchoolWays",
@@ -29,6 +30,7 @@ export default function RootLayout({ children }) {
     <html lang="es">
       <body>
         {children}
+        <ConsoleBridge />
         <ForegroundPushIsland />
         <FooterNav />
       </body>
