@@ -55,6 +55,13 @@ const levelClass = (level) => {
   return "logs-entry";
 };
 
+const extractTimeFromMessage = (message, field) => {
+  if (!message || typeof message !== "string") return "";
+  const pattern = new RegExp(`${field}=([^\\s]+)`);
+  const match = message.match(pattern);
+  return match?.[1] || "";
+};
+
 export default function LogsPage() {
   const [authReady, setAuthReady] = useState(false);
   const [isMonitor, setIsMonitor] = useState(false);
@@ -183,16 +190,21 @@ export default function LogsPage() {
           </div>
         ) : (
           <div className="logs-list">
-            {orderedLogs.map((entry) => (
-              <article className={levelClass(entry.level)} key={entry.id}>
-                <div className="logs-meta">
-                  <span>[{entry.level || "log"}]</span>
-                  <span>{entry.timestamp || "-"}</span>
-                  <span>{entry.path || "/"}</span>
-                </div>
-                <pre>{entry.message || ""}</pre>
-              </article>
-            ))}
+            {orderedLogs.map((entry) => {
+              const sentAt = extractTimeFromMessage(entry.message, "sentAt") || entry.timestamp || "-";
+              const reportedAt = extractTimeFromMessage(entry.message, "reportedAt");
+              return (
+                <article className={levelClass(entry.level)} key={entry.id}>
+                  <div className="logs-meta">
+                    <span>[{entry.level || "log"}]</span>
+                    <span>Enviado: {sentAt}</span>
+                    {reportedAt ? <span>GPS reportado: {reportedAt}</span> : null}
+                    <span>{entry.path || "/"}</span>
+                  </div>
+                  <pre>{entry.message || ""}</pre>
+                </article>
+              );
+            })}
           </div>
         )}
       </section>

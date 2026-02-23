@@ -68,10 +68,14 @@ const logLiveCoords = (source, position) => {
   const lng = Number(position?.coords?.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
   const accuracy = Number(position?.coords?.accuracy);
-  const now = new Date().toISOString();
+  const sentAt = new Date().toISOString();
+  const reportedAtMs = Number(position?.timestamp);
+  const reportedAt = Number.isFinite(reportedAtMs)
+    ? new Date(reportedAtMs).toISOString()
+    : "unknown";
   const accuracyText = Number.isFinite(accuracy) ? ` +/-${Math.round(accuracy)}m` : "";
   console.log(
-    `[SchoolWays GPS][${source}] ${now} lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}${accuracyText}`
+    `[SchoolWays GPS][${source}] sentAt=${sentAt} reportedAt=${reportedAt} lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}${accuracyText}`
   );
 };
 
