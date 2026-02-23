@@ -6,6 +6,7 @@ import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebaseClient";
 
 const SEND_INTERVAL_MS = 5000;
+export const LOCATION_TICK_EVENT = "schoolways:location-tick";
 const GEOLOCATION_OPTIONS = {
   enableHighAccuracy: true,
   maximumAge: 2000,
@@ -131,6 +132,18 @@ export default function LiveLocationTicker() {
 
           console.log(
             `[SchoolWays GPS][global-5s] sentAt=${sentAt} reportedAt=${reportedAt} lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}${accuracyText}`
+          );
+
+          window.dispatchEvent(
+            new CustomEvent(LOCATION_TICK_EVENT, {
+              detail: {
+                lat,
+                lng,
+                accuracy: Number.isFinite(accuracy) ? accuracy : null,
+                sentAt,
+                reportedAt,
+              },
+            })
           );
 
           try {

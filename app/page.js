@@ -12,6 +12,7 @@ import {
   setDoc,
 } from "firebase/firestore";
 import AuthPanel from "./components/AuthPanel";
+import { LOCATION_TICK_EVENT } from "./components/LiveLocationTicker";
 import { auth, db } from "./lib/firebaseClient";
 import { geocodeAddressToCoords } from "./lib/geocodeClient";
 import {
@@ -1931,6 +1932,47 @@ function HomeContent() {
       return;
     }
     stopLocationWatch();
+  }, [profile, mapReady]);
+
+  useEffect(() => {
+    if (!profile || !mapReady || !isMonitorProfile(profile)) return;
+    if (typeof window === "undefined" || !window.google) return;
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    const handleLocationTick = (event) => {
+      const lat = Number(event?.detail?.lat);
+      const lng = Number(event?.detail?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const coords = { lat, lng };
+      updateMarker(window.google, map, coords, { upload: false });
+      void updateEta(coords);
+
+      const accuracy = Number(event?.detail?.accuracy);
+      if (!Number.isFinite(accuracy)) return;
+
+      if (!accuracyCircleRef.current) {
+        accuracyCircleRef.current = new window.google.maps.Circle({
+          map,
+          center: coords,
+          radius: accuracy,
+          fillColor: "#1a73e8",
+          fillOpacity: 0.15,
+          strokeColor: "#1a73e8",
+          strokeOpacity: 0.3,
+          strokeWeight: 1,
+        });
+      } else {
+        accuracyCircleRef.current.setCenter(coords);
+        accuracyCircleRef.current.setRadius(accuracy);
+      }
+    };
+
+    window.addEventListener(LOCATION_TICK_EVENT, handleLocationTick);
+    return () => {
+      window.removeEventListener(LOCATION_TICK_EVENT, handleLocationTick);
+    };
   }, [profile, mapReady]);
 
   useEffect(() => {
