@@ -32,7 +32,7 @@ messaging.onBackgroundMessage((payload) => {
 
   self.registration.showNotification(title, {
     body,
-    icon: "/logo.jpg",
+    icon: "/logo.png",
     badge: "/favicon.ico",
     vibrate: [220, 120, 220],
     renotify: true,

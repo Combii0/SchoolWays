@@ -261,7 +261,7 @@ const sendPushMessage = async ({ messaging, db, student, message }) => {
       notification: {
         title: "SchoolWays",
         body: message,
-        icon: "/logo.jpg",
+        icon: "/logo.png",
         badge: "/favicon.ico",
         tag: "schoolways-route-alert",
       },
