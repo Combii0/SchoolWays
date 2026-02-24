@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "watch:coords": "node --env-file=.env.local scripts/watch-coords.cjs"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",

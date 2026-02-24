@@ -46,6 +46,20 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
 
+## Terminal live coordinates
+
+You can stream live bus coordinates (lat/lng) directly in terminal from Firestore:
+
+```bash
+npm run watch:coords -- --route "Ruta 1"
+# or
+npm run watch:coords -- --route-id ruta-1
+# or
+npm run watch:coords -- --path routes/ruta-1/live/current
+```
+
+The command listens for changes in `routes/<routeId>/live/current` and prints updated coordinates in real time.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
