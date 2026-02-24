@@ -44,6 +44,8 @@ const ZOOM_RESET = 15;
 const MAX_FIT_ZOOM = 17;
 const SHOW_SCHOOL_MARKER = false;
 const STOP_REACHED_METERS = 180;
+const MAP_MARKER_REFRESH_INTERVAL_MS = 5000;
+const LAST_BUS_COORDS_STORAGE_KEY = "schoolways:last-bus-coords";
 const ROUTE_REFRESH_INTERVAL_MS = 9000;
 const ROUTE_GRADIENT_START = { r: 113, g: 210, b: 255 };
 const ROUTE_GRADIENT_END = { r: 34, g: 232, b: 188 };
@@ -66,6 +68,21 @@ const isMonitorProfile = (profile) => {
     accountType === "monitor" ||
     accountType === "monitora"
   );
+};
+
+const parseStoredCoords = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_BUS_COORDS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const lat = Number(parsed?.lat);
+    const lng = Number(parsed?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat, lng };
+  } catch (error) {
+    return null;
+  }
 };
 
 const getRouteIdCandidates = ({ profile, routeKey, routeStopsByKey }) => {
@@ -607,6 +624,14 @@ function HomeContent() {
 
     if (shouldUpload) {
       void maybeUploadLocation(coords);
+    }
+
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LAST_BUS_COORDS_STORAGE_KEY, JSON.stringify(coords));
+      }
+    } catch (error) {
+      // ignore storage errors
     }
   };
 
@@ -1960,6 +1985,67 @@ function HomeContent() {
       return;
     }
     stopLocationWatch();
+  }, [profile, mapReady, locationEnabled]);
+
+  useEffect(() => {
+    if (!profile || !mapReady || !window.google) return;
+    const map = mapInstanceRef.current;
+    if (!map || lastPositionRef.current) return;
+
+    const cached = parseStoredCoords();
+    if (!cached) return;
+    updateMarker(window.google, map, cached, { upload: false });
+    void updateEta(cached, { force: true });
+  }, [profile, mapReady]);
+
+  useEffect(() => {
+    if (!profile || !mapReady || !locationEnabled || !isMonitorProfile(profile)) return;
+    if (!("geolocation" in navigator) || !window.google) return;
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    let cancelled = false;
+    const tick = () => {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          if (cancelled) return;
+          const coords = {
+            lat: Number(position?.coords?.latitude),
+            lng: Number(position?.coords?.longitude),
+          };
+          if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) return;
+          updateMarker(window.google, map, coords, { upload: false });
+          void updateEta(coords);
+
+          const accuracy = Number(position?.coords?.accuracy);
+          if (!Number.isFinite(accuracy)) return;
+          if (!accuracyCircleRef.current) {
+            accuracyCircleRef.current = new window.google.maps.Circle({
+              map,
+              center: coords,
+              radius: accuracy,
+              fillColor: "#1a73e8",
+              fillOpacity: 0.15,
+              strokeColor: "#1a73e8",
+              strokeOpacity: 0.3,
+              strokeWeight: 1,
+            });
+          } else {
+            accuracyCircleRef.current.setCenter(coords);
+            accuracyCircleRef.current.setRadius(accuracy);
+          }
+        },
+        () => null,
+        GEOLOCATION_OPTIONS
+      );
+    };
+
+    tick();
+    const intervalId = window.setInterval(tick, MAP_MARKER_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, [profile, mapReady, locationEnabled]);
 
   useEffect(() => {
