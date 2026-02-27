@@ -47,8 +47,9 @@ const ZOOM_RESET = 15;
 const MAX_FIT_ZOOM = 17;
 const SHOW_SCHOOL_MARKER = false;
 const STOP_REACHED_METERS = 180;
-const MAP_MARKER_REFRESH_INTERVAL_MS = 5000;
+const MAP_MARKER_REFRESH_INTERVAL_MS = 4000;
 const LAST_BUS_COORDS_STORAGE_KEY = "schoolways:last-bus-coords";
+const MAP_STATE_STORAGE_KEY = "schoolways:mapState";
 const LAST_BUS_COORDS_MAX_AGE_MS = 90 * 1000;
 const ROUTE_REFRESH_INTERVAL_MS = 9000;
 const ROUTE_GRADIENT_START = { r: 113, g: 210, b: 255 };
@@ -96,6 +97,25 @@ const parseStoredCoords = (profile) => {
       return null;
     }
     return { lat, lng };
+  } catch (error) {
+    return null;
+  }
+};
+
+const parseStoredMapState = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(MAP_STATE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const lat = Number(parsed?.lat);
+    const lng = Number(parsed?.lng);
+    const zoom = Number(parsed?.zoom);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(zoom)) {
+      return null;
+    }
+    if (zoom < 3 || zoom > 22) return null;
+    return { lat, lng, zoom };
   } catch (error) {
     return null;
   }
@@ -300,7 +320,6 @@ function HomeContent() {
   const lastLocationRequestAtRef = useRef(0);
   const locationErrorCountRef = useRef(0);
   const locationRetryAfterRef = useRef(0);
-  const hasCenteredRef = useRef(false);
   const lastPositionRef = useRef(null);
   const lastUploadRef = useRef(0);
   const profileRef = useRef(null);
@@ -521,7 +540,6 @@ function HomeContent() {
     lastStopAddressRef.current = null;
     lastSchoolAddressRef.current = null;
     hasFitRef.current = false;
-    hasCenteredRef.current = false;
     setIslandExpanded(false);
     setEtaMinutes(null);
     setEtaDistanceKm(null);
@@ -800,7 +818,7 @@ function HomeContent() {
       }
 
       const now = Date.now();
-      if (now - lastUploadRef.current < 5000) return;
+      if (now - lastUploadRef.current < MAP_MARKER_REFRESH_INTERVAL_MS) return;
       lastUploadRef.current = now;
 
       const routeKey = resolveRouteKey(currentProfile);
@@ -856,11 +874,6 @@ function HomeContent() {
       });
     } else {
       setMarkerPosition(userMarkerRef.current, coords);
-    }
-
-    if (!hasCenteredRef.current) {
-      hasCenteredRef.current = true;
-      map.panTo(coords);
     }
 
     if (shouldUpload) {
@@ -1127,7 +1140,7 @@ function HomeContent() {
     const now = Date.now();
     if (!force && now < locationRetryAfterRef.current) return;
     if (!force && hasActiveLocationWatchRef.current) return;
-    if (!force && now - lastLocationRequestAtRef.current < 5000) return;
+    if (!force && now - lastLocationRequestAtRef.current < MAP_MARKER_REFRESH_INTERVAL_MS) return;
     lastLocationRequestAtRef.current = now;
 
     if (force) {
@@ -1787,8 +1800,8 @@ function HomeContent() {
       isBusMarker
         ? {
             url: "/icons/bus.png",
-            scaledSize: new google.maps.Size(52, 52),
-            anchor: new google.maps.Point(26, 26),
+            scaledSize: new google.maps.Size(64, 64),
+            anchor: new google.maps.Point(32, 32),
           }
         : isSchoolMarker
           ? {
@@ -2230,14 +2243,20 @@ function HomeContent() {
         if (mapInstanceRef.current) return;
 
         const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID";
+        const storedMapState = parseStoredMapState();
         const map = new google.maps.Map(mapRef.current, {
-          center: BOGOTA,
-          zoom: ZOOM_NEAR,
+          center: storedMapState
+            ? { lat: storedMapState.lat, lng: storedMapState.lng }
+            : BOGOTA,
+          zoom: storedMapState?.zoom ?? ZOOM_NEAR,
           mapTypeControl: false,
           streetViewControl: false,
           fullscreenControl: false,
           mapId: mapId || undefined,
         });
+        if (storedMapState) {
+          hasFitRef.current = true;
+        }
 
         mapInstanceRef.current = map;
         setMapReady(true);
@@ -2251,7 +2270,7 @@ function HomeContent() {
               lng: center.lng(),
               zoom: map.getZoom(),
             };
-            window.localStorage.setItem("schoolways:mapState", JSON.stringify(payload));
+            window.localStorage.setItem(MAP_STATE_STORAGE_KEY, JSON.stringify(payload));
           } catch (err) {
             // ignore
           }
@@ -2455,7 +2474,10 @@ function HomeContent() {
     };
 
     void fetchLiveSnapshots();
-    const pollIntervalId = window.setInterval(fetchLiveSnapshots, 5000);
+    const pollIntervalId = window.setInterval(
+      fetchLiveSnapshots,
+      MAP_MARKER_REFRESH_INTERVAL_MS
+    );
 
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
@@ -2657,6 +2679,13 @@ function HomeContent() {
             aria-hidden={!islandExpanded}
           >
             <div className="map-top-island-panel-scroll">
+              <div className="map-top-island-card">
+                <div className="map-top-island-label">Estado de ruta</div>
+                <div className="map-top-island-value">{profileRouteLabel}</div>
+                <div className="map-top-island-subline">
+                  {monitorSchoolLabel} · Actualizado {lastUpdateLabel}
+                </div>
+              </div>
               {isProfileMonitor ? (
                 <>
                   <div className="map-top-island-card">

@@ -5,7 +5,8 @@ import { onAuthStateChanged } from "firebase/auth";
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebaseClient";
 
-const SEND_INTERVAL_MS = 5000;
+const SEND_INTERVAL_MS = 4000;
+const LOCATION_LOG_TAG = `global-${Math.round(SEND_INTERVAL_MS / 1000)}s`;
 const ROUTE_LIVE_COLLECTIONS = ["routes", "rutas"];
 export const LOCATION_TICK_EVENT = "schoolways:location-tick";
 export const LOCATION_TOGGLE_EVENT = "schoolways:location-toggle";
@@ -318,7 +319,7 @@ export default function LiveLocationTicker() {
         : "";
 
       console.log(
-        `[SchoolWays GPS][global-5s][${reason}] sentAt=${sentAt} reportedAt=${reportedAt} lat=${fix.lat.toFixed(6)} lng=${fix.lng.toFixed(6)}${accuracyText}`
+        `[SchoolWays GPS][${LOCATION_LOG_TAG}][${reason}] sentAt=${sentAt} reportedAt=${reportedAt} lat=${fix.lat.toFixed(6)} lng=${fix.lng.toFixed(6)}${accuracyText}`
       );
 
       try {
@@ -343,7 +344,7 @@ export default function LiveLocationTicker() {
         lastSentAtMs = sentAtMs;
       } catch (error) {
         console.warn(
-          `[SchoolWays GPS][global-5s][${reason}] sentAt=${sentAt} reportedAt=${reportedAt} firestore-write-failed`
+          `[SchoolWays GPS][${LOCATION_LOG_TAG}][${reason}] sentAt=${sentAt} reportedAt=${reportedAt} firestore-write-failed`
         );
       } finally {
         inFlightRef.current = false;
@@ -368,7 +369,7 @@ export default function LiveLocationTicker() {
         lastWarnAtMs = now;
         const sentAt = new Date(now).toISOString();
         console.warn(
-          `[SchoolWays GPS][global-5s][${source}] sentAt=${sentAt} geolocation-error code=${
+          `[SchoolWays GPS][${LOCATION_LOG_TAG}][${source}] sentAt=${sentAt} geolocation-error code=${
             Number.isFinite(code) ? code : "unknown"
           } message=${message || "unknown"}`
         );
@@ -416,7 +417,7 @@ export default function LiveLocationTicker() {
         lastWarnAtMs = now;
         const sentAt = new Date(now).toISOString();
         console.warn(
-          `[SchoolWays GPS][global-5s][watch] sentAt=${sentAt} geolocation-error code=${
+          `[SchoolWays GPS][${LOCATION_LOG_TAG}][watch] sentAt=${sentAt} geolocation-error code=${
             Number.isFinite(code) ? code : "unknown"
           } message=${message}`
         );
