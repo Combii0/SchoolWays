@@ -135,10 +135,8 @@ export default function LogsPage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const handleIncomingLog = (event) => {
-      const entry = event?.detail;
-      if (!entry || typeof entry !== "object") return;
-      setLogs((prev) => [...prev, entry].slice(-500));
+    const handleIncomingLog = () => {
+      setLogs(readConsoleLogs());
     };
 
     const handleStorageUpdate = (event) => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import {
@@ -8,8 +8,10 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
+  where,
 } from "firebase/firestore";
 import AuthPanel from "./components/AuthPanel";
 import {
@@ -29,6 +31,7 @@ import {
   getServiceDateKey,
   isStopAbsentStatus,
   normalizeStopKey,
+  STOP_STATUS,
 } from "./lib/routeDailyStatus";
 
 const BOGOTA = { lat: 4.711, lng: -74.0721 };
@@ -46,11 +49,15 @@ const SHOW_SCHOOL_MARKER = false;
 const STOP_REACHED_METERS = 180;
 const MAP_MARKER_REFRESH_INTERVAL_MS = 5000;
 const LAST_BUS_COORDS_STORAGE_KEY = "schoolways:last-bus-coords";
+const LAST_BUS_COORDS_MAX_AGE_MS = 90 * 1000;
 const ROUTE_REFRESH_INTERVAL_MS = 9000;
 const ROUTE_GRADIENT_START = { r: 113, g: 210, b: 255 };
 const ROUTE_GRADIENT_END = { r: 34, g: 232, b: 188 };
 const MAX_GRADIENT_SEGMENTS = 96;
 const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
+const ROUTE_DAILY_COLLECTIONS = ["routes", "rutas"];
+const ROUTE_LIVE_COLLECTIONS = ["routes", "rutas"];
+const LIVE_HIGH_ACCURACY_MAX_METERS = 60;
 const GEOLOCATION_OPTIONS = {
   enableHighAccuracy: true,
   maximumAge: 2000,
@@ -70,7 +77,7 @@ const isMonitorProfile = (profile) => {
   );
 };
 
-const parseStoredCoords = () => {
+const parseStoredCoords = (profile) => {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(LAST_BUS_COORDS_STORAGE_KEY);
@@ -79,10 +86,35 @@ const parseStoredCoords = () => {
     const lat = Number(parsed?.lat);
     const lng = Number(parsed?.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    const storedAtMs = Number(parsed?.updatedAtMs ?? parsed?.at);
+    if (!Number.isFinite(storedAtMs)) return null;
+    if (Date.now() - storedAtMs > LAST_BUS_COORDS_MAX_AGE_MS) return null;
+
+    const storedRouteId = toLowerText(parsed?.routeId);
+    const profileRouteId = toLowerText(getRouteId(profile?.route));
+    if (storedRouteId && profileRouteId && storedRouteId !== profileRouteId) {
+      return null;
+    }
     return { lat, lng };
   } catch (error) {
     return null;
   }
+};
+
+const normalizeMatchText = (value) =>
+  value === null || value === undefined
+    ? ""
+    : value
+        .toString()
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]/g, "");
+
+const firstAddressSegment = (value) => {
+  if (value === null || value === undefined) return "";
+  return value.toString().split(",")[0]?.trim() || "";
 };
 
 const getProfileDisplayName = (profile) => {
@@ -107,6 +139,19 @@ const getProfileRouteLabel = (profile) => {
   const route = profile?.route === null || profile?.route === undefined ? "" : profile.route;
   const text = route.toString().trim();
   return text || "Ruta";
+};
+
+const getInstitutionDisplayName = (profile) => {
+  if (!profile || typeof profile !== "object") return "";
+  const candidates = [
+    profile.institutionName,
+    profile.schoolName,
+    profile.school,
+    profile.institution,
+  ];
+  return candidates
+    .map((value) => (value === null || value === undefined ? "" : value.toString().trim()))
+    .find(Boolean);
 };
 
 const getRouteIdCandidates = ({ profile, routeKey, routeStopsByKey }) => {
@@ -234,7 +279,7 @@ function loadGoogleMaps(apiKey) {
     }
     window.__initGoogleMaps = () => resolve(window.google);
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&v=weekly&loading=async&callback=__initGoogleMaps`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&v=weekly&loading=async&libraries=marker&callback=__initGoogleMaps`;
     script.async = true;
     script.defer = true;
     script.onerror = () => reject(new Error("Google Maps failed to load"));
@@ -294,10 +339,18 @@ function HomeContent() {
   const [etaDistanceKm, setEtaDistanceKm] = useState(null);
   const [etaMinutes, setEtaMinutes] = useState(null);
   const [etaTitle, setEtaTitle] = useState("Llegada");
+  const [lastLocationUpdatedAt, setLastLocationUpdatedAt] = useState(null);
   const [routeStopsByKey, setRouteStopsByKey] = useState({});
   const [dailyStopStatuses, setDailyStopStatuses] = useState({});
   const [liveExcludedStopKeys, setLiveExcludedStopKeys] = useState([]);
   const [locationEnabled, setLocationEnabled] = useState(true);
+  const [islandExpanded, setIslandExpanded] = useState(false);
+  const [routeUsers, setRouteUsers] = useState([]);
+  const [monitorNextStop, setMonitorNextStop] = useState({
+    title: "--",
+    order: null,
+    source: "Firebase + IA",
+  });
   const userDocUnsubRef = useRef(null);
   const profileRouteSignature = profile
     ? [
@@ -428,12 +481,19 @@ function HomeContent() {
 
   useEffect(() => {
     if (!profile) {
+      setIslandExpanded(false);
       setMarkersLoading(false);
       setEtaMinutes(null);
       setEtaDistanceKm(null);
       setEtaTitle("Llegada");
+      setLastLocationUpdatedAt(null);
       setDailyStopStatuses({});
       setLiveExcludedStopKeys([]);
+      setMonitorNextStop({
+        title: "--",
+        order: null,
+        source: "Firebase + IA",
+      });
       liveExcludedBySourceRef.current = {};
       liveLocationBySourceRef.current = {};
       stopReadyRef.current = false;
@@ -462,11 +522,18 @@ function HomeContent() {
     lastSchoolAddressRef.current = null;
     hasFitRef.current = false;
     hasCenteredRef.current = false;
+    setIslandExpanded(false);
     setEtaMinutes(null);
     setEtaDistanceKm(null);
     setEtaTitle("Llegada");
+    setLastLocationUpdatedAt(null);
     setDailyStopStatuses({});
     setLiveExcludedStopKeys([]);
+    setMonitorNextStop({
+      title: "--",
+      order: null,
+      source: "Firebase + IA",
+    });
     liveExcludedBySourceRef.current = {};
     liveLocationBySourceRef.current = {};
     resolvedRouteStopsRef.current = [];
@@ -491,6 +558,146 @@ function HomeContent() {
   const resolveRouteKey = (currentProfile) =>
     resolveRouteKeyFromStops(currentProfile, routeStopsByKey);
 
+  const activeRouteKey = resolveRouteKey(profile);
+  const activeRouteStops = useMemo(() => {
+    if (!activeRouteKey) return [];
+    const stops = routeStopsByKey[activeRouteKey];
+    return Array.isArray(stops) ? stops : [];
+  }, [activeRouteKey, routeStopsByKey]);
+
+  const stopOrderByAddress = useMemo(() => {
+    const mapped = new Map();
+    activeRouteStops.forEach((stop, index) => {
+      const order = index + 1;
+      const candidates = [
+        normalizeMatchText(stop?.address),
+        normalizeMatchText(firstAddressSegment(stop?.address)),
+        normalizeMatchText(stop?.title),
+      ].filter(Boolean);
+      candidates.forEach((candidate) => {
+        if (!mapped.has(candidate)) {
+          mapped.set(candidate, order);
+        }
+      });
+    });
+    return mapped;
+  }, [activeRouteStops]);
+
+  useEffect(() => {
+    if (!profile?.institutionCode) {
+      setRouteUsers([]);
+      return;
+    }
+
+    const usersRef = collection(db, "users");
+    const usersQuery = query(usersRef, where("institutionCode", "==", profile.institutionCode));
+    const targetRoute = normalizeMatchText(profile?.route);
+
+    const unsubscribe = onSnapshot(
+      usersQuery,
+      (snapshot) => {
+        const users = snapshot.docs
+          .map((item) => ({ uid: item.id, ...(item.data() || {}) }))
+          .filter((item) => {
+            if (!targetRoute) return true;
+            return normalizeMatchText(item?.route) === targetRoute;
+          });
+        setRouteUsers(users);
+      },
+      () => {
+        setRouteUsers([]);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [profile?.institutionCode, profile?.route]);
+
+  const routeStudents = useMemo(
+    () =>
+      routeUsers.filter((item) => {
+        if (isMonitorProfile(item)) return false;
+        return Boolean(item?.studentCode || item?.studentName || item?.stopAddress);
+      }),
+    [routeUsers]
+  );
+
+  const routeMonitor = useMemo(
+    () => routeUsers.find((item) => isMonitorProfile(item)) || null,
+    [routeUsers]
+  );
+
+  const monitorDisplayName = getProfileDisplayName(routeMonitor) || "Monitora por confirmar";
+  const assignedStopAddress =
+    profile?.stopAddress ||
+    profile?.studentStopAddress ||
+    studentCodeDataRef.current?.stopAddress ||
+    "";
+  const studentStopOrder =
+    stopOrderByAddress.get(normalizeMatchText(assignedStopAddress)) ||
+    stopOrderByAddress.get(normalizeMatchText(firstAddressSegment(assignedStopAddress))) ||
+    null;
+
+  const routeStudentEntries = useMemo(() => {
+    return routeStudents.map((item) => {
+      const displayName = getProfileDisplayName(item) || "Estudiante";
+      const stopAddress = item?.stopAddress || "";
+      const order =
+        stopOrderByAddress.get(normalizeMatchText(stopAddress)) ||
+        stopOrderByAddress.get(normalizeMatchText(firstAddressSegment(stopAddress))) ||
+        null;
+
+      const keyCandidates = [
+        normalizeStopKey({ address: stopAddress }),
+        normalizeStopKey({ address: firstAddressSegment(stopAddress) }),
+      ].filter(Boolean);
+      let statusEntry = null;
+      for (const key of keyCandidates) {
+        if (dailyStopStatuses[key]) {
+          statusEntry = dailyStopStatuses[key];
+          break;
+        }
+      }
+
+      const picked = statusEntry?.status === STOP_STATUS.BOARDED;
+      return {
+        uid: item.uid,
+        name: displayName,
+        stopAddress,
+        order,
+        picked,
+      };
+    });
+  }, [routeStudents, stopOrderByAddress, dailyStopStatuses]);
+
+  const studentsTotal = routeStudentEntries.length;
+  const studentsPicked = routeStudentEntries.filter((item) => item.picked).length;
+  const studentsPending = Math.max(0, studentsTotal - studentsPicked);
+  const sortedRouteStudentEntries = useMemo(
+    () =>
+      [...routeStudentEntries].sort((left, right) => {
+        const leftOrder = Number.isFinite(left?.order) ? left.order : Number.MAX_SAFE_INTEGER;
+        const rightOrder = Number.isFinite(right?.order) ? right.order : Number.MAX_SAFE_INTEGER;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return left.name.localeCompare(right.name, "es");
+      }),
+    [routeStudentEntries]
+  );
+
+  const profileRouteLabel = getProfileRouteLabel(profile);
+  const monitorRouteLabel = getProfileRouteLabel(routeMonitor || profile);
+  const profileInstitutionName = getInstitutionDisplayName(profile);
+  const monitorInstitutionName =
+    getInstitutionDisplayName(routeMonitor) || profileInstitutionName;
+  const schoolAddressLabel = firstAddressSegment(
+    profile?.institutionAddress ||
+      institutionAddress ||
+      routeMonitor?.institutionAddress ||
+      studentCodeDataRef.current?.institutionAddress
+  );
+  const monitorSchoolLabel = monitorInstitutionName || schoolAddressLabel || "Colegio";
+  const studentRouteSchoolLabel = `${monitorRouteLabel} - ${monitorSchoolLabel}`;
+  const monitorRouteSchoolLabel = `${profileRouteLabel} - ${monitorSchoolLabel}`;
+
   useEffect(() => {
     if (!profile) {
       setDailyStopStatuses({});
@@ -509,7 +716,7 @@ function HomeContent() {
     }
 
     const dateKey = getServiceDateKey();
-    const roots = ["routes"];
+    const roots = ROUTE_DAILY_COLLECTIONS;
     const sourceMaps = {};
     const unsubscribers = [];
 
@@ -604,29 +811,40 @@ function HomeContent() {
       });
       if (!routeIds.length) return;
 
-      await Promise.allSettled(
-        routeIds.map((routeId) => {
-          const liveRef = doc(db, "routes", routeId, "live", "current");
-          return setDoc(
-            liveRef,
-            {
-              uid: currentUser.uid,
-              route: currentProfile.route,
-              lat: coords.lat,
-              lng: coords.lng,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
+      const writes = [];
+      routeIds.forEach((routeId) => {
+        ROUTE_LIVE_COLLECTIONS.forEach((rootCollection) => {
+          const liveRef = doc(db, rootCollection, routeId, "live", "current");
+          writes.push(
+            setDoc(
+              liveRef,
+              {
+                uid: currentUser.uid,
+                route: currentProfile.route,
+                lat: coords.lat,
+                lng: coords.lng,
+                updatedAtClientMs: now,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            )
           );
-        })
-      );
+        });
+      });
+
+      await Promise.allSettled(writes);
     } catch (err) {
       // ignore upload errors to avoid interrupting location updates
     }
   };
 
   const updateMarker = (google, map, coords, options = {}) => {
-    const shouldUpload = options.upload !== false;
+    const shouldUpload = options.upload === true;
+    const markerUpdatedAtMs = Number(options?.updatedAtMs);
+    const markerUpdatedAt = Number.isFinite(markerUpdatedAtMs)
+      ? markerUpdatedAtMs
+      : Date.now();
+    setLastLocationUpdatedAt(markerUpdatedAt);
     lastPositionRef.current = coords;
 
     if (!userMarkerRef.current) {
@@ -642,7 +860,6 @@ function HomeContent() {
 
     if (!hasCenteredRef.current) {
       hasCenteredRef.current = true;
-      map.setZoom(ZOOM_RESET);
       map.panTo(coords);
     }
 
@@ -652,7 +869,16 @@ function HomeContent() {
 
     try {
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(LAST_BUS_COORDS_STORAGE_KEY, JSON.stringify(coords));
+        const currentProfile = profileRef.current;
+        window.localStorage.setItem(
+          LAST_BUS_COORDS_STORAGE_KEY,
+          JSON.stringify({
+            lat: coords.lat,
+            lng: coords.lng,
+            routeId: getRouteId(currentProfile?.route),
+            updatedAtMs: Date.now(),
+          })
+        );
       }
     } catch (error) {
       // ignore storage errors
@@ -919,7 +1145,7 @@ function HomeContent() {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
         };
-        updateMarker(window.google, map, coords, { upload: false });
+        updateMarker(window.google, map, coords);
         void updateEta(coords);
         if (!accuracyCircleRef.current) {
           accuracyCircleRef.current = new window.google.maps.Circle({
@@ -957,7 +1183,7 @@ function HomeContent() {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
         };
-        updateMarker(window.google, map, coords, { upload: false });
+        updateMarker(window.google, map, coords);
         void updateEta(coords);
         if (!accuracyCircleRef.current) {
           accuracyCircleRef.current = new window.google.maps.Circle({
@@ -1219,6 +1445,11 @@ function HomeContent() {
         : null;
 
     if (!pendingStops.length && !targetSchool) {
+      setMonitorNextStop({
+        title: "--",
+        order: null,
+        source: "Firebase + IA",
+      });
       setEtaMetrics({ title: "Llegada", distanceMeters: null, durationSeconds: null });
       return;
     }
@@ -1265,6 +1496,18 @@ function HomeContent() {
 
     if (isMonitorProfile(profile)) {
       if (orderedPending.length) {
+        const nextStop = orderedPending[0] || null;
+        const nextOrder =
+          typeof nextStop?.sourceIndex === "number" ? nextStop.sourceIndex + 1 : null;
+        setMonitorNextStop({
+          title:
+            nextStop?.title ||
+            firstAddressSegment(nextStop?.address) ||
+            nextStop?.address ||
+            "--",
+          order: nextOrder,
+          source: "Firebase + IA",
+        });
         void syncMonitorPushEta({ coords, orderedPending, legs });
         const firstLeg = sumLegs(legs, 0, 0);
         let distanceMeters = firstLeg.distanceMeters;
@@ -1283,6 +1526,11 @@ function HomeContent() {
       }
 
       if (targetSchool) {
+        setMonitorNextStop({
+          title: "Colegio",
+          order: null,
+          source: "Firebase + IA",
+        });
         const toSchool = await getDirectRouteMetrics(coords, targetSchool);
         setEtaMetrics({
           title: "Llegada al colegio",
@@ -1292,6 +1540,11 @@ function HomeContent() {
         return;
       }
 
+      setMonitorNextStop({
+        title: "--",
+        order: null,
+        source: "Firebase + IA",
+      });
       setEtaMetrics({ title: "Llegada", distanceMeters: null, durationSeconds: null });
       return;
     }
@@ -1493,7 +1746,7 @@ function HomeContent() {
     const isBusMarker = kind === "user";
     const markerZIndex = isBusMarker ? 9999 : 120;
     const AdvancedMarker = google.maps?.marker?.AdvancedMarkerElement;
-    if (AdvancedMarker && map?.getMapId && map.getMapId()) {
+    if (AdvancedMarker && map) {
       try {
         const content = document.createElement("div");
         if (isBusMarker) {
@@ -1812,6 +2065,15 @@ function HomeContent() {
           });
         });
 
+        if (!lastPositionRef.current && resolvedList.length && !isMonitorProfile(profile)) {
+          const firstCoords = {
+            lat: resolvedList[0].coords.lat(),
+            lng: resolvedList[0].coords.lng(),
+          };
+          updateMarker(google, map, firstCoords, { upload: false });
+          void updateEta(firstCoords, { force: true });
+        }
+
         if (SHOW_SCHOOL_MARKER && schoolCoords) {
           if (!schoolMarkerRef.current) {
             schoolMarkerRef.current = createMarker(google, {
@@ -1958,7 +2220,7 @@ function HomeContent() {
         if (!google || !mapRef.current || !isMounted) return;
         if (mapInstanceRef.current) return;
 
-        const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID;
+        const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID";
         const map = new google.maps.Map(mapRef.current, {
           center: BOGOTA,
           zoom: ZOOM_NEAR,
@@ -2004,73 +2266,22 @@ function HomeContent() {
 
   useEffect(() => {
     if (!profile || !mapReady) return;
-    if (isMonitorProfile(profile) && locationEnabled) {
-      requestLocation();
-      return;
-    }
+    // GPS publishing now runs centrally in LiveLocationTicker to avoid
+    // monitor/student drift from duplicate location writers.
     stopLocationWatch();
   }, [profile, mapReady, locationEnabled]);
 
   useEffect(() => {
     if (!profile || !mapReady || !window.google) return;
+    if (isMonitorProfile(profile)) return;
     const map = mapInstanceRef.current;
     if (!map || lastPositionRef.current) return;
 
-    const cached = parseStoredCoords();
+    const cached = parseStoredCoords(profile);
     if (!cached) return;
     updateMarker(window.google, map, cached, { upload: false });
     void updateEta(cached, { force: true });
   }, [profile, mapReady]);
-
-  useEffect(() => {
-    if (!profile || !mapReady || !locationEnabled || !isMonitorProfile(profile)) return;
-    if (!("geolocation" in navigator) || !window.google) return;
-    const map = mapInstanceRef.current;
-    if (!map) return;
-
-    let cancelled = false;
-    const tick = () => {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          if (cancelled) return;
-          const coords = {
-            lat: Number(position?.coords?.latitude),
-            lng: Number(position?.coords?.longitude),
-          };
-          if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) return;
-          updateMarker(window.google, map, coords, { upload: false });
-          void updateEta(coords);
-
-          const accuracy = Number(position?.coords?.accuracy);
-          if (!Number.isFinite(accuracy)) return;
-          if (!accuracyCircleRef.current) {
-            accuracyCircleRef.current = new window.google.maps.Circle({
-              map,
-              center: coords,
-              radius: accuracy,
-              fillColor: "#1a73e8",
-              fillOpacity: 0.15,
-              strokeColor: "#1a73e8",
-              strokeOpacity: 0.3,
-              strokeWeight: 1,
-            });
-          } else {
-            accuracyCircleRef.current.setCenter(coords);
-            accuracyCircleRef.current.setRadius(accuracy);
-          }
-        },
-        () => null,
-        GEOLOCATION_OPTIONS
-      );
-    };
-
-    tick();
-    const intervalId = window.setInterval(tick, MAP_MARKER_REFRESH_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [profile, mapReady, locationEnabled]);
 
   useEffect(() => {
     if (!profile || !mapReady || !isMonitorProfile(profile) || !locationEnabled) return;
@@ -2115,6 +2326,7 @@ function HomeContent() {
 
   useEffect(() => {
     if (!profile || !mapReady || !window.google) return;
+    if (isMonitorProfile(profile)) return;
 
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -2138,12 +2350,13 @@ function HomeContent() {
     };
     void initFirstStop();
 
-    const roots = ["routes"];
+    const roots = ROUTE_LIVE_COLLECTIONS;
     const unsubscribers = [];
 
     const applyLivePayload = (sourceKey, data) => {
       const lat = parseCoord(data?.lat);
       const lng = parseCoord(data?.lng);
+      const accuracy = parseCoord(data?.accuracy);
       const excluded = Array.isArray(data?.excludedStopKeys)
         ? data.excludedStopKeys
             .map((value) =>
@@ -2164,19 +2377,37 @@ function HomeContent() {
         delete liveLocationBySourceRef.current[sourceKey];
         return;
       }
+      if (accuracy === null || accuracy > LIVE_HIGH_ACCURACY_MAX_METERS) {
+        return;
+      }
 
       liveLocationBySourceRef.current[sourceKey] = {
         lat,
         lng,
-        updatedAt: toMillis(data?.updatedAt),
+        accuracy,
+        updatedAt: Math.max(
+          toMillis(data?.updatedAt),
+          parseCoord(data?.updatedAtClientMs) || 0,
+          parseCoord(data?.updatedAtMs) || 0
+        ),
       };
 
       const latestLocation = Object.values(liveLocationBySourceRef.current)
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+        .sort((a, b) => {
+          const timeDiff = (b.updatedAt || 0) - (a.updatedAt || 0);
+          if (timeDiff !== 0) return timeDiff;
+          const aAccuracy = Number.isFinite(a?.accuracy) ? a.accuracy : Number.POSITIVE_INFINITY;
+          const bAccuracy = Number.isFinite(b?.accuracy) ? b.accuracy : Number.POSITIVE_INFINITY;
+          return aAccuracy - bAccuracy;
+        })[0];
       if (!latestLocation) return;
+      if (latestLocation.updatedAt && Date.now() - latestLocation.updatedAt > 25000) return;
 
       const coords = { lat: latestLocation.lat, lng: latestLocation.lng };
-      updateMarker(window.google, map, coords, { upload: false });
+      updateMarker(window.google, map, coords, {
+        upload: false,
+        updatedAtMs: latestLocation.updatedAt || Date.now(),
+      });
       void updateEta(coords);
     };
 
@@ -2195,18 +2426,27 @@ function HomeContent() {
       });
     });
 
-    const pollIntervalId = window.setInterval(async () => {
-      const fetches = routeIds.map(async (routeId) => {
-        const sourceKey = `routes:${routeId}`;
-        try {
-          const snap = await getDoc(doc(db, "routes", routeId, "live", "current"));
-          applyLivePayload(sourceKey, snap.exists() ? snap.data() : null);
-        } catch (error) {
-          // ignore polling errors; realtime listeners remain primary source
-        }
+    const fetchLiveSnapshots = async () => {
+      const fetches = [];
+      routeIds.forEach((routeId) => {
+        roots.forEach((rootCollection) => {
+          const sourceKey = `${rootCollection}:${routeId}`;
+          fetches.push(
+            getDoc(doc(db, rootCollection, routeId, "live", "current"))
+              .then((snap) => {
+                applyLivePayload(sourceKey, snap.exists() ? snap.data() : null);
+              })
+              .catch(() => {
+                // ignore polling errors; realtime listeners remain primary source
+              })
+          );
+        });
       });
       await Promise.allSettled(fetches);
-    }, 5000);
+    };
+
+    void fetchLiveSnapshots();
+    const pollIntervalId = window.setInterval(fetchLiveSnapshots, 5000);
 
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
@@ -2288,8 +2528,24 @@ function HomeContent() {
     }
 
     if (profile && isMonitorProfile(profile) && locationEnabled) {
-      // For monitor, center on fresh device location if cache is missing.
-      requestLocation({ force: true });
+      // For monitor, request one precise fix on demand.
+      if ("geolocation" in navigator && window.google) {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const coords = {
+              lat: Number(position?.coords?.latitude),
+              lng: Number(position?.coords?.longitude),
+            };
+            if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) return;
+            updateMarker(window.google, map, coords, { upload: false });
+            map.setZoom(ZOOM_NEAR);
+            map.panTo(coords);
+            void updateEta(coords, { force: true });
+          },
+          () => null,
+          GEOLOCATION_OPTIONS
+        );
+      }
     }
     if (userMarkerRef.current) {
       const markerPos =
@@ -2320,7 +2576,21 @@ function HomeContent() {
   };
 
   const profileDisplayName = getProfileDisplayName(profile) || "Estudiante";
-  const profileRouteLabel = getProfileRouteLabel(profile);
+  const isProfileMonitor = isMonitorProfile(profile);
+  const lastUpdateLabel = Number.isFinite(lastLocationUpdatedAt)
+    ? new Intl.DateTimeFormat("es-CO", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(lastLocationUpdatedAt)
+    : "--:--:--";
+  const assignedStopLabel = assignedStopAddress || "Sin paradero asignado";
+  const studentStopOrderLabel = studentStopOrder !== null ? `#${studentStopOrder}` : "--";
+  const monitorNextStopOrderLabel =
+    monitorNextStop?.order !== null && monitorNextStop?.order !== undefined
+      ? `#${monitorNextStop.order}`
+      : "--";
 
   return (
     <main className="map-page">
@@ -2339,10 +2609,127 @@ function HomeContent() {
         aria-label="Mapa"
       />
       {profile ? (
-        <section className="map-top-island" aria-label="Información del estudiante y ruta">
-          <div className="map-top-island-name">{profileDisplayName}</div>
-          <div className="map-top-island-route">{profileRouteLabel}</div>
-        </section>
+        <div className={islandExpanded ? "map-top-island-wrap expanded" : "map-top-island-wrap"}>
+          <button
+            type="button"
+            className="map-top-island"
+            onClick={() => setIslandExpanded((previous) => !previous)}
+            aria-expanded={islandExpanded}
+            aria-controls="map-top-island-panel"
+            aria-label="Abrir resumen de ruta"
+          >
+            <div className="map-top-island-route">
+              <span>{profileRouteLabel}</span>
+              <span className="map-top-island-route-time">{lastUpdateLabel}</span>
+            </div>
+            <div className="map-top-island-name">{profileDisplayName}</div>
+            <span className="map-top-island-chevron" aria-hidden="true">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 20 20"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M5 7.75L10 12.25L15 7.75"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+          </button>
+          <section
+            id="map-top-island-panel"
+            className={islandExpanded ? "map-top-island-panel open" : "map-top-island-panel"}
+            aria-label="Detalles de la ruta"
+            aria-hidden={!islandExpanded}
+          >
+            <div className="map-top-island-panel-scroll">
+              {isProfileMonitor ? (
+                <>
+                  <div className="map-top-island-card">
+                    <div className="map-top-island-label">Ruta asignada y colegio</div>
+                    <div className="map-top-island-value">{monitorRouteSchoolLabel}</div>
+                  </div>
+                  <div className="map-top-island-card">
+                    <div className="map-top-island-label">Paradero siguiente</div>
+                    <div className="map-top-island-value">
+                      {monitorNextStop?.title || "--"}
+                    </div>
+                    <div className="map-top-island-subline">{monitorNextStop?.source}</div>
+                  </div>
+                  <div className="map-top-island-grid">
+                    <div className="map-top-island-mini">
+                      <div className="map-top-island-label">Estudiantes de la ruta</div>
+                      <div className="map-top-island-value">{studentsTotal}</div>
+                    </div>
+                    <div className="map-top-island-mini">
+                      <div className="map-top-island-label">Estudiantes recogidos</div>
+                      <div className="map-top-island-value">{studentsPicked}</div>
+                    </div>
+                    <div className="map-top-island-mini">
+                      <div className="map-top-island-label">Estudiantes por recoger</div>
+                      <div className="map-top-island-value">{studentsPending}</div>
+                    </div>
+                    <div className="map-top-island-mini">
+                      <div className="map-top-island-label">Orden de paradero</div>
+                      <div className="map-top-island-value">{monitorNextStopOrderLabel}</div>
+                    </div>
+                  </div>
+                  <div className="map-top-island-card">
+                    <div className="map-top-island-label">Estudiantes de la ruta</div>
+                    {sortedRouteStudentEntries.length ? (
+                      <ul className="map-top-island-student-list">
+                        {sortedRouteStudentEntries.map((item) => (
+                          <li
+                            key={item.uid || `${item.name}:${item.stopAddress}`}
+                            className={
+                              item.picked
+                                ? "map-top-island-student picked"
+                                : "map-top-island-student"
+                            }
+                          >
+                            <span className="map-top-island-student-name">{item.name}</span>
+                            <span className="map-top-island-student-meta">
+                              {item.order ? `#${item.order}` : "#--"} ·{" "}
+                              {item.picked ? "Recogido" : "Pendiente"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="map-top-island-subline">
+                        No hay estudiantes registrados en la ruta.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="map-top-island-card">
+                    <div className="map-top-island-label">Nombre de la monitora</div>
+                    <div className="map-top-island-value">{monitorDisplayName}</div>
+                  </div>
+                  <div className="map-top-island-card">
+                    <div className="map-top-island-label">Ruta de la monitora y colegio</div>
+                    <div className="map-top-island-value">{studentRouteSchoolLabel}</div>
+                  </div>
+                  <div className="map-top-island-card">
+                    <div className="map-top-island-label">Paradero asignado</div>
+                    <div className="map-top-island-value">{assignedStopLabel}</div>
+                  </div>
+                  <div className="map-top-island-card">
+                    <div className="map-top-island-label">Orden de paradero</div>
+                    <div className="map-top-island-value">{studentStopOrderLabel}</div>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
       ) : null}
       {profile ? (
         <div className="eta-bubble" aria-live="polite">
@@ -2351,13 +2738,14 @@ function HomeContent() {
             <div className="eta-metric">
               {etaMinutes !== null ? `${etaMinutes} min` : "--"}
             </div>
+            <div className="eta-sub eta-updated">Actualizado: {lastUpdateLabel}</div>
             <div className="eta-sub">
               {etaDistanceKm !== null ? `${etaDistanceKm} km` : "-- km"}
             </div>
           </div>
         </div>
       ) : null}
-      {profile && isMonitorProfile(profile) ? (
+      {profile && isProfileMonitor ? (
         <button
           type="button"
           className={locationEnabled ? "map-location-toggle active" : "map-location-toggle"}

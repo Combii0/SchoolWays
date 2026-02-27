@@ -6,6 +6,11 @@ export const LOG_STORAGE_KEY = "schoolways:console-logs";
 export const LOG_EVENT_NAME = "schoolways:console-log";
 const MAX_LOGS = 500;
 const MAX_MESSAGE_LENGTH = 3000;
+const IGNORED_LOG_PATTERNS = [
+  /WebChannelConnection RPC 'Listen' stream .* transport errored/i,
+  /google\.maps\.Marker is deprecated/i,
+  /\[SchoolWays GPS\]\[global-5s\].*geolocation-error code=3/i,
+];
 
 const safeStringify = (value) => {
   if (typeof value === "string") return value;
@@ -28,6 +33,9 @@ const toMessage = (args) => {
     ? `${text.slice(0, MAX_MESSAGE_LENGTH)}...`
     : text;
 };
+
+const shouldIgnoreMessage = (message) =>
+  IGNORED_LOG_PATTERNS.some((pattern) => pattern.test(message));
 
 const readStoredLogs = () => {
   try {
@@ -54,6 +62,9 @@ const emitLogEvent = (entry) => {
 
 const pushLogEntry = (entry) => {
   const current = readStoredLogs();
+  if (current.length >= MAX_LOGS) {
+    current.length = 0;
+  }
   current.push(entry);
   writeStoredLogs(current);
   emitLogEvent(entry);
@@ -83,7 +94,15 @@ export default function ConsoleBridge() {
       console[method] = (...args) => {
         originalMethods[method](...args);
         try {
-          pushLogEntry(buildEntry(method, args));
+          const message = toMessage(args);
+          if (shouldIgnoreMessage(message)) return;
+          pushLogEntry({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            timestamp: new Date().toISOString(),
+            level: method,
+            path: window.location?.pathname || "/",
+            message,
+          });
         } catch (error) {
           // keep console behavior even if persisting logs fails
         }
