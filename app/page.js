@@ -1744,23 +1744,32 @@ function HomeContent() {
 
   const createMarker = (google, { position, map, title, kind }) => {
     const isBusMarker = kind === "user";
+    const isSchoolMarker = kind === "school";
     const markerZIndex = isBusMarker ? 9999 : 120;
     const AdvancedMarker = google.maps?.marker?.AdvancedMarkerElement;
     if (AdvancedMarker && map) {
       try {
         const content = document.createElement("div");
         if (isBusMarker) {
-          content.className = "marker-bus-shell";
+          content.className = "marker-bus-plain";
           const image = document.createElement("img");
           image.src = "/icons/bus.png";
           image.alt = "";
-          image.className = "marker-bus-image";
+          image.className = "marker-bus-image-plain";
           image.decoding = "async";
           image.loading = "eager";
           content.appendChild(image);
         } else {
-          content.className =
-            kind === "school" ? "marker-dot marker-school" : "marker-dot marker-stop";
+          content.className = "marker-pin-wrap";
+          const pinImage = document.createElement("img");
+          pinImage.alt = "";
+          pinImage.className = "marker-pin-image";
+          pinImage.decoding = "async";
+          pinImage.loading = "eager";
+          pinImage.src = isSchoolMarker
+            ? "https://maps.google.com/mapfiles/ms/icons/green-dot.png"
+            : "https://maps.google.com/mapfiles/ms/icons/red-dot.png";
+          content.appendChild(pinImage);
         }
         return new AdvancedMarker({
           map,
@@ -1778,10 +1787,10 @@ function HomeContent() {
       isBusMarker
         ? {
             url: "/icons/bus.png",
-            scaledSize: new google.maps.Size(64, 64),
-            anchor: new google.maps.Point(32, 32),
+            scaledSize: new google.maps.Size(52, 52),
+            anchor: new google.maps.Point(26, 26),
           }
-        : kind === "school"
+        : isSchoolMarker
           ? {
               url: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
             }
