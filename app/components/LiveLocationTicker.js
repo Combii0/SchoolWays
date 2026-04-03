@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebaseClient";
+import { isMonitorProfile } from "../lib/profileRoles";
 
 const SEND_INTERVAL_MS = 4000;
 const LOCATION_LOG_TAG = `global-${Math.round(SEND_INTERVAL_MS / 1000)}s`;
@@ -13,23 +14,23 @@ export const LOCATION_TOGGLE_EVENT = "schoolways:location-toggle";
 export const LOCATION_ENABLED_STORAGE_KEY = "schoolways:location-enabled";
 const GEOLOCATION_OPTIONS = {
   enableHighAccuracy: true,
-  maximumAge: 0,
-  timeout: 15000,
+  maximumAge: 2000,
+  timeout: 20000,
 };
 const GEOLOCATION_FALLBACK_OPTIONS = {
-  enableHighAccuracy: true,
-  maximumAge: 0,
-  timeout: 25000,
+  enableHighAccuracy: false,
+  maximumAge: 30000,
+  timeout: 12000,
 };
-const HIGH_ACCURACY_MAX_METERS = 60;
-const NO_FIX_RELAX_AFTER_MS = 12000;
-const NO_FIX_RELAX_ACCURACY_METERS = 110;
-const TARGET_ACCURACY_METERS = 45;
-const HARD_REJECT_ACCURACY_METERS = 220;
-const MAX_NOISY_JUMP_METERS = 120;
-const STABLE_FIX_REUSE_MS = 4000;
-const RELAX_ACCURACY_AFTER_MS = 4000;
-const MAX_REPORTED_FIX_AGE_MS = 8000;
+const HIGH_ACCURACY_MAX_METERS = 95;
+const NO_FIX_RELAX_AFTER_MS = 8000;
+const NO_FIX_RELAX_ACCURACY_METERS = 180;
+const TARGET_ACCURACY_METERS = 65;
+const HARD_REJECT_ACCURACY_METERS = 320;
+const MAX_NOISY_JUMP_METERS = 240;
+const STABLE_FIX_REUSE_MS = 5000;
+const RELAX_ACCURACY_AFTER_MS = 2500;
+const MAX_REPORTED_FIX_AGE_MS = 20000;
 
 const toText = (value) => {
   if (value === null || value === undefined) return "";
@@ -78,32 +79,6 @@ const readLocationEnabled = () => {
   const raw = window.localStorage.getItem(LOCATION_ENABLED_STORAGE_KEY);
   if (raw === null) return true;
   return raw === "1";
-};
-
-const isMonitorProfile = (profile) => {
-  if (!profile || typeof profile !== "object") return false;
-
-  const role = toLowerText(profile.role);
-  const accountType = toLowerText(profile.accountType);
-  if (
-    role === "monitor" ||
-    role === "monitora" ||
-    accountType === "monitor" ||
-    accountType === "monitora"
-  ) {
-    return true;
-  }
-
-  if (
-    role === "student" ||
-    role === "estudiante" ||
-    accountType === "student" ||
-    accountType === "estudiante"
-  ) {
-    return false;
-  }
-
-  return Boolean(profile.route) && Boolean(profile.institutionCode || profile.institutionName);
 };
 
 export default function LiveLocationTicker() {
@@ -174,6 +149,7 @@ export default function LiveLocationTicker() {
 
     let cancelled = false;
     let watchId = null;
+    let fallbackWatchId = null;
     const startedAtMs = Date.now();
     let latestFix = null;
     let stableFix = null;
@@ -381,48 +357,63 @@ export default function LiveLocationTicker() {
           const code = Number(error?.code);
           const message = toText(error?.message) || "unknown";
           if (code === 3) {
-            // Timeout is common on some Android devices; fallback to a quick cached fix.
+            // Timeout is common on some devices; fallback to a quick cached fix.
             navigator.geolocation.getCurrentPosition(
               handlePosition,
-              (fallbackError) => {
-                const fallbackCode = Number(fallbackError?.code);
-                const fallbackMessage = toText(fallbackError?.message) || "unknown";
-                logWarn(fallbackCode, fallbackMessage, `${reason}-fallback`);
-              },
+              () => null,
               GEOLOCATION_FALLBACK_OPTIONS
             );
             return;
           }
+          if (code === 2) return;
           logWarn(code, message, reason);
         },
         GEOLOCATION_OPTIONS
       );
     };
 
+    const handleWatchPosition = (position, reason = "watch") => {
+      if (cancelled) return;
+      const fix = captureFix(position);
+      if (!fix) return;
+      if (lastSentAtMs === 0) {
+        void writeFix(fix, `${reason}-first-fix`);
+      }
+    };
+
+    const handleWatchError = (error, source = "watch") => {
+      const code = Number(error?.code);
+      const message = toText(error?.message) || "unknown";
+      if (code === 2 || code === 3) return;
+      const now = Date.now();
+      if (now - lastWarnAtMs < 30000) return;
+      lastWarnAtMs = now;
+      const sentAt = new Date(now).toISOString();
+      console.warn(
+        `[SchoolWays GPS][${LOCATION_LOG_TAG}][${source}] sentAt=${sentAt} geolocation-error code=${
+          Number.isFinite(code) ? code : "unknown"
+        } message=${message}`
+      );
+    };
+
     watchId = navigator.geolocation.watchPosition(
       (position) => {
-        if (cancelled) return;
-        const fix = captureFix(position);
-        if (!fix) return;
-        if (lastSentAtMs === 0) {
-          void writeFix(fix, "watch-first-fix");
-        }
+        handleWatchPosition(position, "watch");
       },
       (error) => {
-        const code = Number(error?.code);
-        const message = toText(error?.message) || "unknown";
-        if (code === 3) return;
-        const now = Date.now();
-        if (now - lastWarnAtMs < 30000) return;
-        lastWarnAtMs = now;
-        const sentAt = new Date(now).toISOString();
-        console.warn(
-          `[SchoolWays GPS][${LOCATION_LOG_TAG}][watch] sentAt=${sentAt} geolocation-error code=${
-            Number.isFinite(code) ? code : "unknown"
-          } message=${message}`
-        );
+        handleWatchError(error, "watch");
       },
       GEOLOCATION_OPTIONS
+    );
+
+    fallbackWatchId = navigator.geolocation.watchPosition(
+      (position) => {
+        handleWatchPosition(position, "watch-fallback");
+      },
+      (error) => {
+        handleWatchError(error, "watch-fallback");
+      },
+      GEOLOCATION_FALLBACK_OPTIONS
     );
 
     const tick = () => {
@@ -454,6 +445,9 @@ export default function LiveLocationTicker() {
       window.clearInterval(intervalId);
       if (watchId !== null && "geolocation" in navigator) {
         navigator.geolocation.clearWatch(watchId);
+      }
+      if (fallbackWatchId !== null && "geolocation" in navigator) {
+        navigator.geolocation.clearWatch(fallbackWatchId);
       }
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", handleVisibilityChange);

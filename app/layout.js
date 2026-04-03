@@ -1,4 +1,5 @@
 import "./globals.css";
+import "leaflet/dist/leaflet.css";
 import FooterNav from "./components/FooterNav";
 import ForegroundPushIsland from "./components/ForegroundPushIsland";
 import ConsoleBridge from "./components/ConsoleBridge";

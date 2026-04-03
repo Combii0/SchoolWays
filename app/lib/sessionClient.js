@@ -4,7 +4,6 @@ import {
   deleteField,
   doc,
   getDoc,
-  runTransaction,
   setDoc,
 } from "firebase/firestore";
 
@@ -57,56 +56,49 @@ export const claimSingleDeviceSession = async (db, uid) => {
   const userAgent =
     typeof navigator !== "undefined" ? navigator.userAgent || null : null;
 
-  let blocked = false;
+  const userRef = getUserRef(db, uid);
+  const snapshot = await getDoc(userRef);
+  const data = snapshot.exists() ? snapshot.data() : {};
+  const currentSession = data?.activeSession || null;
 
-  await runTransaction(db, async (transaction) => {
-    const userRef = getUserRef(db, uid);
-    const snapshot = await transaction.get(userRef);
-    const data = snapshot.exists() ? snapshot.data() : {};
-    const currentSession = data?.activeSession || null;
+  const sameDevice = currentSession?.deviceId === deviceId;
+  const freshOtherDevice =
+    currentSession &&
+    !sameDevice &&
+    currentSession?.deviceId &&
+    isSessionFresh(currentSession, nowMs);
 
-    const sameDevice = currentSession?.deviceId === deviceId;
-    const freshOtherDevice =
-      currentSession &&
-      !sameDevice &&
-      currentSession?.deviceId &&
-      isSessionFresh(currentSession, nowMs);
+  if (freshOtherDevice) {
+    return { ok: false, deviceId };
+  }
 
-    if (freshOtherDevice) {
-      blocked = true;
-      return;
-    }
-
-    transaction.set(
-      userRef,
-      {
-        activeSession: {
-          deviceId,
-          userAgent,
-          claimedAt: sameDevice
-            ? parseMillis(currentSession?.claimedAt) || nowMs
-            : nowMs,
-          lastSeenAt: nowMs,
-        },
+  await setDoc(
+    userRef,
+    {
+      activeSession: {
+        deviceId,
+        userAgent,
+        claimedAt: sameDevice
+          ? parseMillis(currentSession?.claimedAt) || nowMs
+          : nowMs,
+        lastSeenAt: nowMs,
       },
-      { merge: true }
-    );
-  });
+    },
+    { merge: true }
+  );
 
-  return { ok: !blocked, deviceId };
+  return { ok: true, deviceId };
 };
 
-export const keepSessionAlive = async (db, uid) => {
+export const keepSessionAlive = async (db, uid, knownSession = null) => {
   try {
     const deviceId = getDeviceId();
     const nowMs = getNow();
-    const userRef = getUserRef(db, uid);
-    const snap = await getDoc(userRef);
-    if (!snap.exists()) return false;
-    const activeSession = snap.data()?.activeSession || null;
+    const activeSession = knownSession || null;
     if (activeSession?.deviceId !== deviceId) return false;
     const userAgent =
       typeof navigator !== "undefined" ? navigator.userAgent || null : null;
+    const userRef = getUserRef(db, uid);
     await setDoc(
       userRef,
       {
@@ -128,14 +120,12 @@ export const keepSessionAlive = async (db, uid) => {
 
 export const releaseSingleDeviceSession = async (db, uid) => {
   const deviceId = getDeviceId();
-  await runTransaction(db, async (transaction) => {
-    const userRef = getUserRef(db, uid);
-    const snapshot = await transaction.get(userRef);
-    if (!snapshot.exists()) return;
-    const activeSession = snapshot.data()?.activeSession || null;
-    if (activeSession?.deviceId !== deviceId) return;
-    transaction.set(userRef, { activeSession: deleteField() }, { merge: true });
-  });
+  const userRef = getUserRef(db, uid);
+  const snapshot = await getDoc(userRef);
+  if (!snapshot.exists()) return;
+  const activeSession = snapshot.data()?.activeSession || null;
+  if (activeSession?.deviceId !== deviceId) return;
+  await setDoc(userRef, { activeSession: deleteField() }, { merge: true });
 };
 
 export const isSessionOwnedByCurrentDevice = (session) =>

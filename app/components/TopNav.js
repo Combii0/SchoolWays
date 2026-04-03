@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -15,7 +16,7 @@ export default function TopNav() {
   return (
     <header className="nav">
       <div className="nav-brand">
-        <img src="/logo.svg" alt="SchoolWays" className="nav-logo" />
+        <Image src="/logo.svg" alt="SchoolWays" className="nav-logo" width={40} height={40} />
         <span>SchoolWays</span>
       </div>
       <nav className="nav-links">

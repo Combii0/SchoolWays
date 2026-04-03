@@ -5,6 +5,10 @@ import {
   getAdminDb,
   getAdminMessaging,
 } from "../../../lib/firebaseAdmin";
+import {
+  isMonitorProfile,
+  isStudentProfile,
+} from "../../../lib/profileRoles";
 
 export const runtime = "nodejs";
 
@@ -60,26 +64,6 @@ const normalizeMatchText = (value) => {
 };
 
 const firstAddressSegment = (value) => toText(value).split(",")[0]?.trim() || "";
-
-const isMonitorProfile = (profile) => {
-  const role = toLowerText(profile?.role);
-  const accountType = toLowerText(profile?.accountType);
-  return (
-    role === "monitor" ||
-    role === "monitora" ||
-    accountType === "monitor" ||
-    accountType === "monitora"
-  );
-};
-
-const isStudentProfile = (profile) => {
-  if (!profile || isMonitorProfile(profile)) return false;
-  const accountType = toLowerText(profile?.accountType);
-  const role = toLowerText(profile?.role);
-  if (accountType === "student" || accountType === "estudiante") return true;
-  if (role === "student" || role === "estudiante") return true;
-  return Boolean(profile?.studentCode || profile?.studentName || profile?.stopAddress);
-};
 
 const getStudentDisplayName = (profile) => {
   const fallbackName = [toText(profile?.firstName), toText(profile?.lastName)]

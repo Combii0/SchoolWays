@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -79,9 +79,13 @@ export default function AuthPanel({ onUserActionsChange = null }) {
   const panelRef = useRef(null);
   const userDocUnsubRef = useRef(null);
   const heartbeatRef = useRef(null);
+  const activeSessionRef = useRef(null);
   const forcedAuthErrorRef = useRef("");
   const pushSyncRef = useRef({ uid: "", token: "" });
   const publishedActionsKeyRef = useRef("");
+  const storedPushToken = userProfile?.pushNotifications?.web?.token || "";
+  const storedPushEnabled = Boolean(userProfile?.pushNotifications?.web?.enabled);
+  const hasUserProfile = Boolean(userProfile);
 
   const resetModal = () => {
     setView("login");
@@ -119,14 +123,19 @@ export default function AuthPanel({ onUserActionsChange = null }) {
     await updateProfile(firebaseUser, { displayName: profile.studentName });
 
     let institutionAddress = null;
+    let institutionLat = profile.institutionLat ?? null;
+    let institutionLng = profile.institutionLng ?? null;
     try {
       const instRef = doc(db, "institutions", profile.institutionCode);
       const instSnap = await getDoc(instRef);
       if (instSnap.exists()) {
-        institutionAddress = instSnap.data().address || null;
+        const institutionData = instSnap.data();
+        institutionAddress = institutionData.address || profile.institutionAddress || null;
+        institutionLat = institutionData.lat ?? institutionLat;
+        institutionLng = institutionData.lng ?? institutionLng;
       }
     } catch (err) {
-      institutionAddress = null;
+      institutionAddress = profile.institutionAddress || null;
     }
 
     const userRef = doc(db, "users", firebaseUser.uid);
@@ -138,6 +147,8 @@ export default function AuthPanel({ onUserActionsChange = null }) {
         institutionCode: profile.institutionCode,
         institutionName: profile.institutionName,
         institutionAddress,
+        institutionLat,
+        institutionLng,
         route: profile.route,
         stopAddress: profile.stopAddress,
         createdAt: serverTimestamp(),
@@ -190,6 +201,7 @@ export default function AuthPanel({ onUserActionsChange = null }) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
         }
+        activeSessionRef.current = null;
         if (userDocUnsubRef.current) {
           userDocUnsubRef.current();
           userDocUnsubRef.current = null;
@@ -227,7 +239,7 @@ export default function AuthPanel({ onUserActionsChange = null }) {
         clearInterval(heartbeatRef.current);
       }
       heartbeatRef.current = setInterval(() => {
-        void keepSessionAlive(db, currentUser.uid).then((ok) => {
+        void keepSessionAlive(db, currentUser.uid, activeSessionRef.current).then((ok) => {
           if (ok) return;
           if (!heartbeatRef.current) return;
           clearInterval(heartbeatRef.current);
@@ -242,6 +254,7 @@ export default function AuthPanel({ onUserActionsChange = null }) {
       userDocUnsubRef.current = onSnapshot(userRef, async (snap) => {
         let data = snap.exists() ? snap.data() : null;
         const activeSession = data?.activeSession || null;
+        activeSessionRef.current = activeSession;
         const sessionOwned =
           !activeSession ||
           isSessionOwnedByCurrentDevice(activeSession) ||
@@ -287,6 +300,7 @@ export default function AuthPanel({ onUserActionsChange = null }) {
         clearInterval(heartbeatRef.current);
         heartbeatRef.current = null;
       }
+      activeSessionRef.current = null;
       if (userDocUnsubRef.current) {
         userDocUnsubRef.current();
         userDocUnsubRef.current = null;
@@ -310,7 +324,7 @@ export default function AuthPanel({ onUserActionsChange = null }) {
 
     const syncPushTokenIfPermissionGranted = async () => {
       const uid = user?.uid;
-      if (!uid || !userProfile) return;
+      if (!uid || !hasUserProfile) return;
       const isAppleMobile = isAppleMobileBrowser();
       const isStandalone = isStandaloneWebApp();
       const needsAppleInstall = isAppleMobile && !isStandalone;
@@ -322,8 +336,6 @@ export default function AuthPanel({ onUserActionsChange = null }) {
         return;
       }
 
-      const storedToken = userProfile?.pushNotifications?.web?.token || "";
-      const storedEnabled = Boolean(userProfile?.pushNotifications?.web?.enabled);
       const currentPermission = getBrowserNotificationPermission();
       setPushPermission(currentPermission);
       setShowPushBanner(currentPermission !== "granted");
@@ -335,8 +347,8 @@ export default function AuthPanel({ onUserActionsChange = null }) {
       const result = await setupWebPushForUser({
         uid,
         requestPermission: false,
-        existingToken: storedToken,
-        existingEnabled: storedEnabled,
+        existingToken: storedPushToken,
+        existingEnabled: storedPushEnabled,
       });
       if (cancelled) return;
       if (!result?.ok) {
@@ -359,12 +371,12 @@ export default function AuthPanel({ onUserActionsChange = null }) {
     };
   }, [
     user?.uid,
-    userProfile?.pushNotifications?.web?.token,
-    userProfile?.pushNotifications?.web?.enabled,
-    Boolean(userProfile),
+    hasUserProfile,
+    storedPushEnabled,
+    storedPushToken,
   ]);
 
-  const handleEnableNotifications = async () => {
+  const handleEnableNotifications = useCallback(async () => {
     const uid = user?.uid;
     if (!uid) return;
     if (appleInstallRequired) {
@@ -379,8 +391,8 @@ export default function AuthPanel({ onUserActionsChange = null }) {
       const result = await setupWebPushForUser({
         uid,
         requestPermission: true,
-        existingToken: userProfile?.pushNotifications?.web?.token || "",
-        existingEnabled: Boolean(userProfile?.pushNotifications?.web?.enabled),
+        existingToken: storedPushToken,
+        existingEnabled: storedPushEnabled,
       });
       const currentPermission = getBrowserNotificationPermission();
       setPushPermission(currentPermission);
@@ -424,9 +436,9 @@ export default function AuthPanel({ onUserActionsChange = null }) {
     } finally {
       setPushPending(false);
     }
-  };
+  }, [appleInstallRequired, storedPushEnabled, storedPushToken, user?.uid]);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     setPending(true);
     setError("");
     try {
@@ -444,7 +456,7 @@ export default function AuthPanel({ onUserActionsChange = null }) {
     } finally {
       setPending(false);
     }
-  };
+  }, []);
 
   const handleAppleWebAppCreated = async () => {
     setPushPending(true);
@@ -466,8 +478,8 @@ export default function AuthPanel({ onUserActionsChange = null }) {
       pushMessage,
       logoutPending: pending,
       appleInstallRequired,
-      storedPushToken: userProfile?.pushNotifications?.web?.token || "",
-      storedPushEnabled: Boolean(userProfile?.pushNotifications?.web?.enabled),
+      storedPushToken,
+      storedPushEnabled,
     });
     if (publishedActionsKeyRef.current === key) return;
     publishedActionsKeyRef.current = key;
@@ -489,8 +501,8 @@ export default function AuthPanel({ onUserActionsChange = null }) {
     pushMessage,
     pending,
     appleInstallRequired,
-    userProfile?.pushNotifications?.web?.token,
-    userProfile?.pushNotifications?.web?.enabled,
+    storedPushToken,
+    storedPushEnabled,
     handleEnableNotifications,
     handleLogout,
   ]);
@@ -666,10 +678,77 @@ export default function AuthPanel({ onUserActionsChange = null }) {
 
   const pushUnsupported = pushPermission === "unsupported";
   const pushPermissionBlocked = pushPermission === "denied";
+  const accountDisplayName =
+    userProfile?.studentName ||
+    userProfile?.displayName ||
+    user?.displayName ||
+    user?.email ||
+    "Cuenta";
+  const accountRoute = userProfile?.route || "";
+  const accountInstitution =
+    userProfile?.institutionName || userProfile?.institutionCode || "";
+  const avatarInitial = accountDisplayName.toString().trim().charAt(0).toUpperCase() || "C";
+  const avatarPhoto = userProfile?.photoURL || user?.photoURL || "";
 
   return (
     <div className="auth-panel" ref={panelRef}>
-      {user ? null : (
+      {user ? (
+        <>
+          <button
+            type="button"
+            className="auth-avatar-button"
+            onClick={() => setOpen((value) => !value)}
+            aria-expanded={open}
+            aria-label="Abrir opciones de cuenta"
+          >
+            {avatarPhoto ? (
+              <div
+                className="auth-avatar"
+                style={{ backgroundImage: `url(${avatarPhoto})`, backgroundSize: "cover" }}
+                aria-hidden="true"
+              />
+            ) : (
+              <div className="auth-avatar">{avatarInitial}</div>
+            )}
+          </button>
+          {open ? (
+            <div className="auth-menu">
+              <div className="auth-menu-user">
+                <div className="auth-name">{accountDisplayName}</div>
+                <div className="auth-email">{user?.email || "Sin correo"}</div>
+                {accountRoute ? (
+                  <div className="auth-meta-line">Ruta: {accountRoute}</div>
+                ) : null}
+                {accountInstitution ? (
+                  <div className="auth-meta-line">{accountInstitution}</div>
+                ) : null}
+              </div>
+              {pushPermission !== "granted" ? (
+                <button
+                  type="button"
+                  className="auth-menu-action secondary"
+                  onClick={() => {
+                    void handleEnableNotifications();
+                  }}
+                  disabled={pushPending}
+                >
+                  {pushPending ? "Activando..." : "Activar notificaciones"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="auth-menu-action"
+                onClick={() => {
+                  void handleLogout();
+                }}
+                disabled={pending}
+              >
+                {pending ? "Cerrando..." : "Cerrar sesión"}
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : (
         <>
           {open ? (
             <div

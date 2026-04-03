@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
@@ -52,7 +53,7 @@ export default function FooterNav() {
             data-active={isActive ? "true" : "false"}
             aria-current={isActive ? "page" : undefined}
           >
-            <img src={item.icon} alt="" className="footer-icon" />
+            <Image src={item.icon} alt="" className="footer-icon" width={20} height={20} />
             <span>{item.label}</span>
           </Link>
         );

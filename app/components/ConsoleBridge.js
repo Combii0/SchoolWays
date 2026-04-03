@@ -2,14 +2,22 @@
 
 import { useEffect } from "react";
 
-export const LOG_STORAGE_KEY = "schoolways:console-logs";
+export const LOG_STORAGE_KEY = "schoolways:console-logs:v2";
 export const LOG_EVENT_NAME = "schoolways:console-log";
 const MAX_LOGS = 500;
 const MAX_MESSAGE_LENGTH = 3000;
 const IGNORED_LOG_PATTERNS = [
   /WebChannelConnection RPC 'Listen' stream .* transport errored/i,
   /google\.maps\.Marker is deprecated/i,
-  /\[SchoolWays GPS\]\[global-5s\].*geolocation-error code=3/i,
+  /\[SchoolWays GPS\]\[global-\d+s?\].*geolocation-error code=3/i,
+  /\[SchoolWays GPS\]\[global-\d+s?\].*geolocation-error code=2/i,
+  /@firebase\/firestore:.*INTERNAL ASSERTION FAILED/i,
+  /FIRESTORE.*INTERNAL ASSERTION FAILED/i,
+  /@firebase\/firestore:.*INTERNAL UNHANDLED ERROR/i,
+  /RestConnection RPC 'Commit'.*failed-precondition/i,
+  /Firestore .*RestConnection RPC 'Commit'.*failed-precondition/i,
+  /Could not reach Cloud Firestore backend/i,
+  /GrpcConnection RPC 'Listen' stream .* error/i,
 ];
 
 const safeStringify = (value) => {
@@ -37,23 +45,39 @@ const toMessage = (args) => {
 const shouldIgnoreMessage = (message) =>
   IGNORED_LOG_PATTERNS.some((pattern) => pattern.test(message));
 
+const sanitizeLogs = (entries) => {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry) => entry && typeof entry === "object")
+    .filter((entry) => !shouldIgnoreMessage(safeStringify(entry.message || "")))
+    .slice(-MAX_LOGS);
+};
+
+const persistLogs = (logs) => {
+  try {
+    window.localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(logs));
+  } catch (error) {
+    // ignore quota/private mode failures
+  }
+};
+
 const readStoredLogs = () => {
   try {
     const raw = window.localStorage.getItem(LOG_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const sanitized = sanitizeLogs(parsed);
+    if (Array.isArray(parsed) && sanitized.length !== parsed.length) {
+      persistLogs(sanitized);
+    }
+    return sanitized;
   } catch (error) {
     return [];
   }
 };
 
 const writeStoredLogs = (logs) => {
-  try {
-    window.localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(logs.slice(-MAX_LOGS)));
-  } catch (error) {
-    // ignore quota/private mode failures
-  }
+  persistLogs(sanitizeLogs(logs));
 };
 
 const emitLogEvent = (entry) => {
@@ -61,10 +85,8 @@ const emitLogEvent = (entry) => {
 };
 
 const pushLogEntry = (entry) => {
+  if (shouldIgnoreMessage(safeStringify(entry?.message || ""))) return;
   const current = readStoredLogs();
-  if (current.length >= MAX_LOGS) {
-    current.length = 0;
-  }
   current.push(entry);
   writeStoredLogs(current);
   emitLogEvent(entry);
@@ -92,10 +114,10 @@ export default function ConsoleBridge() {
     methods.forEach((method) => {
       originalMethods[method] = console[method].bind(console);
       console[method] = (...args) => {
-        originalMethods[method](...args);
         try {
           const message = toMessage(args);
           if (shouldIgnoreMessage(message)) return;
+          originalMethods[method](...args);
           pushLogEntry({
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: new Date().toISOString(),
@@ -104,6 +126,7 @@ export default function ConsoleBridge() {
             message,
           });
         } catch (error) {
+          originalMethods[method](...args);
           // keep console behavior even if persisting logs fails
         }
       };
@@ -114,10 +137,13 @@ export default function ConsoleBridge() {
         event?.error instanceof Error
           ? safeStringify(event.error)
           : event?.message || "Error desconocido";
+      if (shouldIgnoreMessage(errorText)) return;
       pushLogEntry(buildEntry("error", [errorText]));
     };
 
     const handleUnhandledRejection = (event) => {
+      const message = toMessage(["UnhandledPromiseRejection", event?.reason]);
+      if (shouldIgnoreMessage(message)) return;
       pushLogEntry(buildEntry("error", ["UnhandledPromiseRejection", event?.reason]));
     };
 

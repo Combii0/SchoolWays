@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import {
@@ -20,6 +20,7 @@ import AuthPanel from "../components/AuthPanel";
 import { estimateMetricsForPoints, recordObservedSpeed } from "../lib/etaPredictor";
 import { auth, db } from "../lib/firebaseClient";
 import { geocodeAddressToCoords } from "../lib/geocodeClient";
+import { isMonitorProfile } from "../lib/profileRoles";
 import {
   getRouteId,
   loadRouteStopsForProfile,
@@ -84,17 +85,6 @@ const addStudentToStopMap = (mapped, key, studentName) => {
 const firstAddressSegment = (value) => {
   if (value === null || value === undefined) return "";
   return value.toString().split(",")[0]?.trim() || "";
-};
-
-const isMonitorProfile = (profile) => {
-  const role = toLowerText(profile?.role);
-  const accountType = toLowerText(profile?.accountType);
-  return (
-    role === "monitor" ||
-    role === "monitora" ||
-    accountType === "monitor" ||
-    accountType === "monitora"
-  );
 };
 
 const logLiveCoords = (source, position) => {
@@ -291,8 +281,10 @@ export default function RecorridoPage() {
     ? `${busCoords.lat.toFixed(6)},${busCoords.lng.toFixed(6)}`
     : "";
 
-  const resolveRouteKey = (currentProfile) =>
-    resolveRouteKeyFromStops(currentProfile, routeStopsByKey);
+  const resolveRouteKey = useCallback(
+    (currentProfile) => resolveRouteKeyFromStops(currentProfile, routeStopsByKey),
+    [routeStopsByKey]
+  );
 
   const getStopCoords = async (stop) => {
     if (!stop) return null;
@@ -330,17 +322,20 @@ export default function RecorridoPage() {
     return request;
   };
 
-  const resolveRouteIdentity = (currentProfile) => {
-    const routeKey = resolveRouteKey(currentProfile);
-    const routeIds = getRouteIdCandidates({
-      profile: currentProfile,
-      routeKey,
-      routeStopsByKey,
-    });
-    return { routeKey, routeId: routeIds[0] || null, routeIds };
-  };
+  const resolveRouteIdentity = useCallback(
+    (currentProfile) => {
+      const routeKey = resolveRouteKey(currentProfile);
+      const routeIds = getRouteIdCandidates({
+        profile: currentProfile,
+        routeKey,
+        routeStopsByKey,
+      });
+      return { routeKey, routeId: routeIds[0] || null, routeIds };
+    },
+    [resolveRouteKey, routeStopsByKey]
+  );
 
-  const syncRoutePush = async ({ eventType, changedStop = null, stopsOverride = null }) => {
+  const syncRoutePush = useCallback(async ({ eventType, changedStop = null, stopsOverride = null }) => {
     if (!isMonitor || !profile) return;
     const { routeId } = resolveRouteIdentity(profile);
     if (!routeId) return;
@@ -472,7 +467,7 @@ export default function RecorridoPage() {
         inFlight: false,
       };
     }
-  };
+  }, [busCoords, isMonitor, profile, resolveRouteIdentity, stopEtas]);
 
   const findStudentsForStop = async (stop) => {
     if (!profile?.institutionCode || !stop?.address) return [];
@@ -898,7 +893,7 @@ export default function RecorridoPage() {
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [profile, routeStopsByKey]);
+  }, [profile, resolveRouteIdentity]);
 
   useEffect(() => {
     setStopEtas((prev) =>
@@ -956,7 +951,7 @@ export default function RecorridoPage() {
     });
 
     return () => unsubLive();
-  }, [profile, routeStopsByKey]);
+  }, [busCoords, profile, resolveRouteIdentity, routeStopsByKey]);
 
   useEffect(() => {
     if (!profile || !isMonitor) return;
@@ -1012,7 +1007,7 @@ export default function RecorridoPage() {
       coords: { lat: busCoords.lat, lng: busCoords.lng },
       at: now,
     };
-  }, [profile?.route, busCoordsSignature]);
+  }, [profile?.route, busCoords, busCoordsSignature]);
 
   useEffect(() => {
     const updateEtas = async () => {
@@ -1157,7 +1152,7 @@ export default function RecorridoPage() {
     };
 
     void updateEtas();
-  }, [profile, busCoords, routeStopsByKey, dailyStopStatuses]);
+  }, [profile, busCoords, routeStopsByKey, dailyStopStatuses, resolveRouteIdentity, syncRoutePush]);
 
   useEffect(() => {
     if (!profile || busCoords) return;
@@ -1188,7 +1183,7 @@ export default function RecorridoPage() {
         };
       });
     });
-  }, [profile, busCoords, routeStopsByKey, dailyStopStatuses]);
+  }, [profile, busCoords, routeStopsByKey, dailyStopStatuses, resolveRouteIdentity]);
 
   if (!profile) {
     return (

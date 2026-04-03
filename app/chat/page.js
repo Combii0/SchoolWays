@@ -9,44 +9,7 @@ import {
   readConsoleLogs,
 } from "../components/ConsoleBridge";
 import { auth, db } from "../lib/firebaseClient";
-
-const toLowerText = (value) =>
-  value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
-
-const isMonitorProfile = (profile) => {
-  if (!profile || typeof profile !== "object") return true;
-  const role = toLowerText(profile.role);
-  const accountType = toLowerText(profile.accountType);
-  const userType = toLowerText(profile.userType);
-  const profileType = toLowerText(profile.profileType);
-  const type = toLowerText(profile.type);
-  const candidates = [role, accountType, userType, profileType, type].filter(Boolean);
-  const isExplicitMonitor = candidates.some(
-    (value) => value === "monitor" || value === "monitora"
-  );
-  if (isExplicitMonitor) return true;
-
-  const isExplicitStudent = candidates.some(
-    (value) => value === "student" || value === "estudiante" || value === "alumno"
-  );
-  if (isExplicitStudent) return false;
-
-  const hasMonitorSignals = Boolean(profile.route) && Boolean(
-    profile.institutionCode || profile.institutionName
-  );
-  if (hasMonitorSignals) return true;
-
-  const hasMonitorKeyword =
-    role.includes("monitor") ||
-    accountType.includes("monitor") ||
-    userType.includes("monitor") ||
-    profileType.includes("monitor") ||
-    type.includes("monitor");
-  if (hasMonitorKeyword) return true;
-
-  // Fallback: if we cannot classify as student, allow Logs access.
-  return true;
-};
+import { isMonitorProfile } from "../lib/profileRoles";
 
 const levelClass = (level) => {
   if (level === "error") return "logs-entry level-error";

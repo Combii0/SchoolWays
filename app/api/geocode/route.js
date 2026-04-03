@@ -1,3 +1,33 @@
+const geocodeCache =
+  globalThis.__schoolwaysGeocodeCache || (globalThis.__schoolwaysGeocodeCache = new Map());
+const geocodeLimiter =
+  globalThis.__schoolwaysGeocodeLimiter ||
+  (globalThis.__schoolwaysGeocodeLimiter = { chain: Promise.resolve() });
+
+const waitForGeocodeSlot = async () => {
+  const previous = geocodeLimiter.chain;
+  geocodeLimiter.chain = previous.then(
+    () =>
+      new Promise((resolve) => {
+        setTimeout(resolve, 1100);
+      })
+  );
+  await previous;
+};
+
+const buildCacheKey = (address) => address.trim().toLowerCase();
+
+const toResult = (item) => {
+  const lat = Number(item?.lat);
+  const lng = Number(item?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    lat,
+    lng,
+    formattedAddress: item?.display_name || "",
+  };
+};
+
 export async function POST(request) {
   try {
     const body = await request.json();
@@ -6,31 +36,44 @@ export async function POST(request) {
       return Response.json({ error: "Address required" }, { status: 400 });
     }
 
-    const apiKey = process.env.GOOGLE_GEOCODING_API_KEY;
-    if (!apiKey) {
-      return Response.json({ error: "Server key not configured" }, { status: 500 });
+    const cacheKey = buildCacheKey(address);
+    const cached = geocodeCache.get(cacheKey);
+    if (cached) {
+      return Response.json(cached);
     }
 
-    const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
-    url.searchParams.set("address", address);
-    url.searchParams.set("key", apiKey);
+    await waitForGeocodeSlot();
 
-    const resp = await fetch(url.toString());
-    const data = await resp.json();
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("q", address);
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set("limit", "1");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("countrycodes", "co");
 
-    if (data.status !== "OK" || !data.results?.length) {
+    const response = await fetch(url.toString(), {
+      headers: {
+        "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
+        "User-Agent": "SchoolWays/1.0 (Next.js geocoding proxy)",
+      },
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
       return Response.json(
-        { error: "Geocoding failed", status: data.status },
-        { status: 400 }
+        { error: "Geocoding upstream failed", status: response.status },
+        { status: 502 }
       );
     }
 
-    const location = data.results[0].geometry.location;
-    return Response.json({
-      lat: location.lat,
-      lng: location.lng,
-      formattedAddress: data.results[0].formatted_address,
-    });
+    const results = await response.json().catch(() => null);
+    const firstResult = Array.isArray(results) ? toResult(results[0]) : null;
+    if (!firstResult) {
+      return Response.json({ error: "Geocoding failed", status: "NO_RESULTS" }, { status: 404 });
+    }
+
+    geocodeCache.set(cacheKey, firstResult);
+    return Response.json(firstResult);
   } catch (error) {
     return Response.json({ error: "Invalid request" }, { status: 400 });
   }

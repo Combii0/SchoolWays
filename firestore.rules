@@ -1,30 +1,33 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
     function currentUserData() {
-      return request.auth != null
+      return signedIn()
         ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
         : null;
     }
 
-    function sameInstitutionAs(uid) {
-      return request.auth != null
+    function sameInstitutionCode(code) {
+      return signedIn()
         && currentUserData() != null
-        && get(/databases/$(database)/documents/users/$(uid)).data.institutionCode
-          == currentUserData().institutionCode;
+        && code != null
+        && currentUserData().institutionCode == code;
     }
 
     function sameInstitutionFromUserDoc(userData) {
-      return request.auth != null
+      return signedIn()
         && currentUserData() != null
         && userData != null
         && userData.institutionCode != null
-        && currentUserData().institutionCode != null
-        && userData.institutionCode == currentUserData().institutionCode;
+        && currentUserData().institutionCode == userData.institutionCode;
     }
 
     function isMonitor() {
-      return request.auth != null
+      return signedIn()
         && currentUserData() != null
         && (
           currentUserData().role in ["monitor", "monitora", "Monitor", "Monitora"]
@@ -35,8 +38,7 @@ service cloud.firestore {
     match /institutions/{institutionId} {
       allow get: if true;
       allow list: if false;
-      allow update: if request.auth != null
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.institutionCode == institutionId
+      allow update: if sameInstitutionCode(institutionId)
         && request.resource.data.code == resource.data.code
         && request.resource.data.name == resource.data.name
         && request.resource.data.diff(resource.data).changedKeys().hasOnly(["lat", "lng", "address"]);
@@ -49,87 +51,87 @@ service cloud.firestore {
       }
 
       match /routes/{routeId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
 
         match /addresses/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /direcciones/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /stops/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
       }
 
       match /rutas/{routeId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
 
         match /addresses/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /direcciones/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /stops/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
       }
     }
 
     match /colegios/{schoolId} {
-      allow get: if request.auth != null;
+      allow get: if signedIn();
       allow list: if false;
       allow create, update, delete: if false;
 
       match /routes/{routeId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
 
         match /addresses/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /direcciones/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /stops/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
       }
 
       match /rutas/{routeId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
 
         match /addresses/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /direcciones/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
 
         match /stops/{addressId} {
-          allow get, list: if request.auth != null;
+          allow get, list: if signedIn();
           allow create, update, delete: if false;
         }
       }
@@ -144,88 +146,108 @@ service cloud.firestore {
     match /studentAccounts/{studentCode} {
       allow get: if true;
       allow list: if false;
-      allow create, update: if request.auth != null
+      allow create, update: if signedIn()
         && request.resource.data.code == studentCode
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.institutionCode == "L1kj2HG3fd4SA5";
+        && exists(/databases/$(database)/documents/studentCodes/$(studentCode))
+        && request.resource.data.institutionCode
+          == get(/databases/$(database)/documents/studentCodes/$(studentCode)).data.institutionCode;
       allow delete: if false;
     }
 
     match /routes/{routeId} {
-      allow get, list: if request.auth != null;
+      allow get, list: if signedIn();
       allow create, update, delete: if false;
 
       match /addresses/{addressId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
       }
 
       match /direcciones/{addressId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
       }
 
       match /stops/{addressId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
       }
 
       match /live/{docId} {
-        allow read: if request.auth != null;
-        allow create, update: if request.auth != null
+        allow read: if signedIn();
+        allow create, update: if signedIn()
           && request.resource.data.uid == request.auth.uid;
         allow delete: if false;
       }
 
       match /daily/{dateId}/stops/{stopId} {
-        allow read: if request.auth != null;
-        allow create, update: if isMonitor()
+        allow read: if signedIn();
+        allow create, update, delete: if isMonitor()
           && request.resource.data.monitorUid == request.auth.uid
-          && request.resource.data.institutionCode == currentUserData().institutionCode;
-        allow delete: if isMonitor();
+          && sameInstitutionCode(request.resource.data.institutionCode);
       }
     }
 
     match /rutas/{routeId} {
-      allow get, list: if request.auth != null;
+      allow get, list: if signedIn();
       allow create, update, delete: if false;
 
       match /addresses/{addressId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
       }
 
       match /direcciones/{addressId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
       }
 
       match /stops/{addressId} {
-        allow get, list: if request.auth != null;
+        allow get, list: if signedIn();
         allow create, update, delete: if false;
       }
 
       match /daily/{dateId}/stops/{stopId} {
-        allow read: if request.auth != null;
-        allow create, update: if isMonitor()
+        allow read: if signedIn();
+        allow create, update, delete: if isMonitor()
           && request.resource.data.monitorUid == request.auth.uid
-          && request.resource.data.institutionCode == currentUserData().institutionCode;
-        allow delete: if isMonitor();
+          && sameInstitutionCode(request.resource.data.institutionCode);
       }
     }
 
     match /users/{uid} {
-      allow read: if request.auth != null
+      allow read: if signedIn()
         && (request.auth.uid == uid || sameInstitutionFromUserDoc(resource.data));
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if signedIn()
+        && request.auth.uid == uid;
+      allow delete: if false;
 
       match /asistencias/{dateId} {
-        allow read: if request.auth != null
-          && (request.auth.uid == uid || (isMonitor() && sameInstitutionAs(uid)));
-        allow create, update, delete: if request.auth != null
-          && (request.auth.uid == uid || (isMonitor() && sameInstitutionAs(uid)));
+        allow read: if signedIn()
+          && (request.auth.uid == uid || sameInstitutionFromUserDoc(
+            get(/databases/$(database)/documents/users/$(uid)).data
+          ));
+        allow create, update, delete: if signedIn()
+          && (
+            request.auth.uid == uid
+            || (
+              isMonitor()
+              && sameInstitutionFromUserDoc(
+                get(/databases/$(database)/documents/users/$(uid)).data
+              )
+            )
+          );
       }
 
+      match /notifications/{notificationId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /routePushStates/{stateId} {
+      allow read, write: if false;
     }
   }
 }
