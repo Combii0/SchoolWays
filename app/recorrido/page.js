@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import {
@@ -34,17 +34,42 @@ import {
   STOP_STATUS,
   STOP_STATUS_LABEL,
 } from "../lib/routeDailyStatus";
+import { LOCATION_TICK_EVENT } from "../components/LiveLocationTicker";
 
 const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
-const GEOLOCATION_OPTIONS = {
-  enableHighAccuracy: true,
-  maximumAge: 2000,
-  timeout: 10000,
-};
+const ROUTE_LIVE_COLLECTIONS = ["routes", "rutas"];
 const ETA_REFRESH_INTERVAL_MS = 120000;
+const MAX_LIVE_BUS_AGE_MS = 25000;
 
 const toLowerText = (value) =>
   value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
+
+const parseCoord = (value) => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const extractCoords = (value) => {
+  if (!value) return null;
+  const lat =
+    parseCoord(value.lat) ??
+    parseCoord(value.latitude) ??
+    parseCoord(value._lat) ??
+    (Array.isArray(value) ? parseCoord(value[0]) : null);
+  const lng =
+    parseCoord(value.lng) ??
+    parseCoord(value.lon) ??
+    parseCoord(value.long) ??
+    parseCoord(value.longitude) ??
+    parseCoord(value._long) ??
+    (Array.isArray(value) ? parseCoord(value[1]) : null);
+  if (lat === null || lng === null) return null;
+  return { lat, lng };
+};
 
 const normalizeMatchText = (value) =>
   value === null || value === undefined
@@ -85,22 +110,6 @@ const addStudentToStopMap = (mapped, key, studentName) => {
 const firstAddressSegment = (value) => {
   if (value === null || value === undefined) return "";
   return value.toString().split(",")[0]?.trim() || "";
-};
-
-const logLiveCoords = (source, position) => {
-  const lat = Number(position?.coords?.latitude);
-  const lng = Number(position?.coords?.longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-  const accuracy = Number(position?.coords?.accuracy);
-  const sentAt = new Date().toISOString();
-  const reportedAtMs = Number(position?.timestamp);
-  const reportedAt = Number.isFinite(reportedAtMs)
-    ? new Date(reportedAtMs).toISOString()
-    : "unknown";
-  const accuracyText = Number.isFinite(accuracy) ? ` +/-${Math.round(accuracy)}m` : "";
-  console.log(
-    `[SchoolWays GPS][${source}] sentAt=${sentAt} reportedAt=${reportedAt} lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}${accuracyText}`
-  );
 };
 
 const getRouteIdCandidates = ({ profile, routeKey, routeStopsByKey }) => {
@@ -258,7 +267,10 @@ const fallbackMinutesFromDistance = (distanceMeters) => {
 
 export default function RecorridoPage() {
   const [profile, setProfile] = useState(null);
-  const [busCoords, setBusCoords] = useState(null);
+  const [liveBusSources, setLiveBusSources] = useState({});
+  const [fallbackBusCoords, setFallbackBusCoords] = useState(null);
+  const [localMonitorSnapshot, setLocalMonitorSnapshot] = useState(null);
+  const [liveBusNowMs, setLiveBusNowMs] = useState(() => Date.now());
   const [stopEtas, setStopEtas] = useState([]);
   const [routeStopsByKey, setRouteStopsByKey] = useState({});
   const [dailyStopStatuses, setDailyStopStatuses] = useState({});
@@ -269,7 +281,6 @@ export default function RecorridoPage() {
   const [savingError, setSavingError] = useState("");
   const [pushSyncInfo, setPushSyncInfo] = useState("");
   const lastFetchRef = useRef(0);
-  const locationWatchIdRef = useRef(null);
   const geocodedStopsRef = useRef(new Map());
   const geocodingStopsRef = useRef(new Map());
   const pushSyncRef = useRef({ at: 0, signature: "", inFlight: false });
@@ -277,9 +288,6 @@ export default function RecorridoPage() {
   const router = useRouter();
 
   const isMonitor = isMonitorProfile(profile);
-  const busCoordsSignature = busCoords
-    ? `${busCoords.lat.toFixed(6)},${busCoords.lng.toFixed(6)}`
-    : "";
 
   const resolveRouteKey = useCallback(
     (currentProfile) => resolveRouteKeyFromStops(currentProfile, routeStopsByKey),
@@ -334,6 +342,54 @@ export default function RecorridoPage() {
     },
     [resolveRouteKey, routeStopsByKey]
   );
+
+  const activeRouteIdentity = useMemo(
+    () =>
+      profile
+        ? resolveRouteIdentity(profile)
+        : {
+            routeKey: null,
+            routeId: null,
+            routeIds: [],
+          },
+    [profile, resolveRouteIdentity]
+  );
+
+  const liveBusSnapshot = useMemo(() => {
+    if (!activeRouteIdentity.routeIds.length) return null;
+    const freshnessThreshold = liveBusNowMs - MAX_LIVE_BUS_AGE_MS;
+    const entries = Object.entries(liveBusSources)
+      .filter(([sourceKey]) => activeRouteIdentity.routeIds.includes(sourceKey.split(":")[1]))
+      .map(([, value]) => value)
+      .filter((value) => value && Number(value.updatedAt || 0) >= freshnessThreshold)
+      .sort((left, right) => {
+        const timeDiff = (right.updatedAt || 0) - (left.updatedAt || 0);
+        if (timeDiff !== 0) return timeDiff;
+        const leftAccuracy = Number.isFinite(left?.accuracy)
+          ? Number(left.accuracy)
+          : Number.POSITIVE_INFINITY;
+        const rightAccuracy = Number.isFinite(right?.accuracy)
+          ? Number(right.accuracy)
+          : Number.POSITIVE_INFINITY;
+        return leftAccuracy - rightAccuracy;
+      });
+    return entries[0] || null;
+  }, [activeRouteIdentity.routeIds, liveBusNowMs, liveBusSources]);
+
+  const busCoords = useMemo(() => {
+    const localIsFresh =
+      isMonitor &&
+      localMonitorSnapshot &&
+      Number(localMonitorSnapshot.updatedAt || 0) >= liveBusNowMs - MAX_LIVE_BUS_AGE_MS;
+    if (localIsFresh) {
+      return localMonitorSnapshot.coords;
+    }
+    return liveBusSnapshot?.coords || fallbackBusCoords || null;
+  }, [fallbackBusCoords, isMonitor, liveBusNowMs, liveBusSnapshot?.coords, localMonitorSnapshot]);
+
+  const busCoordsSignature = busCoords
+    ? `${busCoords.lat.toFixed(6)},${busCoords.lng.toFixed(6)}`
+    : "";
 
   const syncRoutePush = useCallback(async ({ eventType, changedStop = null, stopsOverride = null }) => {
     if (!isMonitor || !profile) return;
@@ -682,7 +738,9 @@ export default function RecorridoPage() {
       }
       if (!currentUser) {
         setProfile(null);
-        setBusCoords(null);
+        setLiveBusSources({});
+        setFallbackBusCoords(null);
+        setLocalMonitorSnapshot(null);
         setStopEtas([]);
         setDailyStopStatuses({});
         setStudentsByStopKey({});
@@ -712,6 +770,13 @@ export default function RecorridoPage() {
       }
       unsubscribe();
     };
+  }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setLiveBusNowMs(Date.now());
+    }, 5000);
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -925,63 +990,120 @@ export default function RecorridoPage() {
   }, [dailyStopStatuses]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!isMonitor) {
+      setLocalMonitorSnapshot(null);
+      return () => null;
+    }
 
-    const { routeId, routeKey } = resolveRouteIdentity(profile);
-    if (!routeId) return;
-
-    const routeStops = routeKey ? routeStopsByKey[routeKey] : null;
-    const initFirstStop = async () => {
-      if (busCoords || !routeStops?.length) return;
-      const firstWithCoords = routeStops.find((stop) => stop?.coords) || routeStops[0];
-      const firstCoords = await getStopCoords(firstWithCoords);
-      if (!firstCoords) return;
-      setBusCoords((prev) => (prev ? prev : firstCoords));
+    const handleLocationTick = (event) => {
+      const detail = event?.detail || {};
+      const coords = extractCoords(detail);
+      if (!coords) return;
+      const updatedAt = Date.parse(detail.reportedAt || detail.sentAt || "") || Date.now();
+      setLocalMonitorSnapshot({
+        coords,
+        updatedAt,
+        accuracy: parseCoord(detail.accuracy),
+      });
     };
-    void initFirstStop();
 
-    const liveRef = doc(db, "routes", routeId, "live", "current");
-    const unsubLive = onSnapshot(liveRef, (snap) => {
-      const data = snap.exists() ? snap.data() : null;
-      const lat = Number(data?.lat);
-      const lng = Number(data?.lng);
-      if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        setBusCoords({ lat, lng });
-      }
-    });
-
-    return () => unsubLive();
-  }, [busCoords, profile, resolveRouteIdentity, routeStopsByKey]);
+    window.addEventListener(LOCATION_TICK_EVENT, handleLocationTick);
+    return () => {
+      window.removeEventListener(LOCATION_TICK_EVENT, handleLocationTick);
+    };
+  }, [isMonitor]);
 
   useEffect(() => {
-    if (!profile || !isMonitor) return;
-    if (!("geolocation" in navigator)) return;
+    const routeIds = activeRouteIdentity.routeIds;
+    if (!routeIds.length) {
+      setLiveBusSources({});
+      return () => null;
+    }
 
-    let cancelled = false;
-    const onPosition = (position) => {
-      if (cancelled) return;
-      const lat = Number(position?.coords?.latitude);
-      const lng = Number(position?.coords?.longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-      const coords = { lat, lng };
-      setBusCoords(coords);
-      logLiveCoords("monitor-watchPosition", position);
-    };
+    const unsubscribers = [];
+    routeIds.forEach((candidateRouteId) => {
+      ROUTE_LIVE_COLLECTIONS.forEach((rootCollection) => {
+        const sourceKey = `${rootCollection}:${candidateRouteId}`;
+        unsubscribers.push(
+          onSnapshot(
+            doc(db, rootCollection, candidateRouteId, "live", "current"),
+            (snapshot) => {
+              setLiveBusSources((current) => {
+                const next = { ...current };
+                if (!snapshot.exists()) {
+                  delete next[sourceKey];
+                  return next;
+                }
 
-    navigator.geolocation.getCurrentPosition(onPosition, () => null, GEOLOCATION_OPTIONS);
-    const watchId = navigator.geolocation.watchPosition(onPosition, () => null, GEOLOCATION_OPTIONS);
-    locationWatchIdRef.current = watchId;
+                const data = snapshot.data() || {};
+                const coords = extractCoords(data);
+                if (!coords) {
+                  delete next[sourceKey];
+                  return next;
+                }
+
+                next[sourceKey] = {
+                  coords,
+                  updatedAt: Math.max(
+                    toMillis(data?.updatedAt),
+                    parseCoord(data?.updatedAtClientMs) || 0,
+                    parseCoord(data?.updatedAtMs) || 0
+                  ),
+                  accuracy: parseCoord(data?.accuracy),
+                };
+                return next;
+              });
+            },
+            () => {
+              setLiveBusSources((current) => {
+                const next = { ...current };
+                delete next[sourceKey];
+                return next;
+              });
+            }
+          )
+        );
+      });
+    });
 
     return () => {
-      cancelled = true;
-      if (watchId !== null && "geolocation" in navigator) {
-        navigator.geolocation.clearWatch(watchId);
-      }
-      if (locationWatchIdRef.current === watchId) {
-        locationWatchIdRef.current = null;
-      }
+      unsubscribers.forEach((unsubscribe) => {
+        try {
+          unsubscribe();
+        } catch (error) {
+          // ignore
+        }
+      });
     };
-  }, [profile, isMonitor, routeStopsByKey]);
+  }, [activeRouteIdentity.routeIds]);
+
+  useEffect(() => {
+    if (!profile) {
+      setFallbackBusCoords(null);
+      return () => null;
+    }
+
+    const routeStops = activeRouteIdentity.routeKey
+      ? routeStopsByKey[activeRouteIdentity.routeKey]
+      : null;
+    if (!routeStops?.length) {
+      setFallbackBusCoords(null);
+      return () => null;
+    }
+
+    let cancelled = false;
+    const initFirstStop = async () => {
+      const firstWithCoords = routeStops.find((stop) => extractCoords(stop?.coords)) || routeStops[0];
+      const firstCoords = await getStopCoords(firstWithCoords);
+      if (cancelled || !firstCoords) return;
+      setFallbackBusCoords(firstCoords);
+    };
+
+    void initFirstStop();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRouteIdentity.routeKey, profile, routeStopsByKey]);
 
   useEffect(() => {
     const routeId = getRouteId(profile?.route);
