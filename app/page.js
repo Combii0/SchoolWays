@@ -42,16 +42,11 @@ const TRAIL_MIN_POINT_METERS = 8;
 const ZOOM_NEAR = 16;
 const ZOOM_STOP = 17;
 const SHOW_SCHOOL_MARKER = false;
-const DISPLAY_GEOLOCATION_OPTIONS = {
-  enableHighAccuracy: true,
-  maximumAge: 1500,
-  timeout: 18000,
-};
-const DISPLAY_GEOLOCATION_FALLBACK_OPTIONS = {
-  enableHighAccuracy: false,
-  maximumAge: 12000,
-  timeout: 10000,
-};
+const MAX_LIVE_BUS_AGE_MS = 25000;
+const LOCAL_MONITOR_MAX_ACCURACY_METERS = 120;
+const LOCAL_MONITOR_ACCURACY_DEGRADATION_METERS = 18;
+const LOCAL_MONITOR_NOISY_JUMP_METERS = 160;
+const LOCAL_MONITOR_STICKY_WINDOW_MS = 12000;
 const EMPTY_AUTH_ACTIONS = Object.freeze({
   hasUser: false,
   canEnableNotifications: false,
@@ -63,7 +58,6 @@ const EMPTY_AUTH_ACTIONS = Object.freeze({
 });
 
 const toText = (value) => (value === null || value === undefined ? "" : value.toString().trim());
-const toLowerText = (value) => toText(value).toLowerCase();
 
 const normalizeMatchText = (value) =>
   toText(value)
@@ -250,12 +244,13 @@ function HomeContent() {
   const [trailPoints, setTrailPoints] = useState([]);
   const [localMonitorCoords, setLocalMonitorCoords] = useState(null);
   const [localMonitorUpdatedAt, setLocalMonitorUpdatedAt] = useState(null);
+  const [liveBusNowMs, setLiveBusNowMs] = useState(() => Date.now());
   const [islandExpanded, setIslandExpanded] = useState(false);
   const [authActions, setAuthActions] = useState(EMPTY_AUTH_ACTIONS);
   const [pulse, setPulse] = useState(false);
   const [focusRequest, setFocusRequest] = useState(null);
   const focusCounterRef = useRef(0);
-  const localMonitorFixRef = useRef({ coords: null, updatedAt: 0 });
+  const localMonitorFixRef = useRef({ coords: null, updatedAt: 0, accuracy: null });
 
   const profile = session.profile;
   const profileRouteSignature = profile
@@ -291,6 +286,80 @@ function HomeContent() {
       zoom,
     });
   }, []);
+
+  const acceptLocalMonitorFix = useCallback(
+    (coords, updatedAt = Date.now(), accuracy = null) => {
+      if (!coords) return null;
+
+      const numericAccuracy = Number(accuracy);
+      const nextAccuracy = Number.isFinite(numericAccuracy) ? numericAccuracy : null;
+      if (nextAccuracy !== null && nextAccuracy > LOCAL_MONITOR_MAX_ACCURACY_METERS) {
+        return null;
+      }
+
+      const previousFix = localMonitorFixRef.current || {
+        coords: null,
+        updatedAt: 0,
+        accuracy: null,
+      };
+      const previousCoords = previousFix.coords || null;
+      const previousAccuracy = Number.isFinite(Number(previousFix.accuracy))
+        ? Number(previousFix.accuracy)
+        : null;
+      const jumpMeters = distanceMetersBetween(previousCoords, coords);
+      const updatedDeltaMs = Math.max(0, updatedAt - (previousFix.updatedAt || 0));
+
+      if (previousCoords && typeof jumpMeters === "number") {
+        if (jumpMeters < 3 && updatedDeltaMs < 1200) {
+          return previousCoords;
+        }
+
+        const degradedAccuracy =
+          nextAccuracy !== null &&
+          previousAccuracy !== null &&
+          nextAccuracy > previousAccuracy + LOCAL_MONITOR_ACCURACY_DEGRADATION_METERS;
+        const noisyLargeJump =
+          nextAccuracy !== null &&
+          nextAccuracy > 80 &&
+          jumpMeters > LOCAL_MONITOR_NOISY_JUMP_METERS;
+
+        if (
+          (degradedAccuracy && jumpMeters > 30 && updatedDeltaMs < LOCAL_MONITOR_STICKY_WINDOW_MS) ||
+          noisyLargeJump
+        ) {
+          return previousCoords;
+        }
+      }
+
+      localMonitorFixRef.current = {
+        coords,
+        updatedAt,
+        accuracy: nextAccuracy,
+      };
+      setLocalMonitorCoords(coords);
+      setLocalMonitorUpdatedAt(updatedAt);
+
+      if (!trailEnabled) {
+        return coords;
+      }
+
+      setTrailPoints((current) => {
+        const previousTrail = current.length ? current[current.length - 1] : null;
+        const trailJumpMeters = distanceMetersBetween(previousTrail, coords);
+        if (
+          previousTrail &&
+          typeof trailJumpMeters === "number" &&
+          trailJumpMeters < TRAIL_MIN_POINT_METERS
+        ) {
+          return current;
+        }
+        return [...current, coords];
+      });
+
+      return coords;
+    },
+    [trailEnabled]
+  );
 
   useEffect(() => {
     let unsubscribeProfile = null;
@@ -359,7 +428,7 @@ function HomeContent() {
       setTrailPoints([]);
       setLocalMonitorCoords(null);
       setLocalMonitorUpdatedAt(null);
-      localMonitorFixRef.current = { coords: null, updatedAt: 0 };
+      localMonitorFixRef.current = { coords: null, updatedAt: 0, accuracy: null };
       setResolvedStopCoords({});
       setResolvedSchoolCoords(null);
       setInstitutionSnapshot({ name: "", address: "", coords: null });
@@ -406,6 +475,13 @@ function HomeContent() {
   }, []);
 
   useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setLiveBusNowMs(Date.now());
+    }, 5000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
     if (!isProfileMonitor || !locationEnabled) return;
 
     const handleLocationTick = (event) => {
@@ -413,119 +489,14 @@ function HomeContent() {
       const coords = extractCoords(detail);
       if (!coords) return;
       const updatedAt = Date.parse(detail.reportedAt || detail.sentAt || "") || Date.now();
-      const previous = localMonitorFixRef.current?.coords || null;
-      const jumpMeters = distanceMetersBetween(previous, coords);
-      if (
-        previous &&
-        typeof jumpMeters === "number" &&
-        jumpMeters < 3 &&
-        updatedAt - (localMonitorFixRef.current?.updatedAt || 0) < 1200
-      ) {
-        return;
-      }
-      localMonitorFixRef.current = { coords, updatedAt };
-      setLocalMonitorCoords(coords);
-      setLocalMonitorUpdatedAt(updatedAt);
-      if (!trailEnabled) return;
-
-      setTrailPoints((current) => {
-        const previousTrail = current.length ? current[current.length - 1] : null;
-        const trailJumpMeters = distanceMetersBetween(previousTrail, coords);
-        if (
-          previousTrail &&
-          typeof trailJumpMeters === "number" &&
-          trailJumpMeters < TRAIL_MIN_POINT_METERS
-        ) {
-          return current;
-        }
-        return [...current, coords];
-      });
+      acceptLocalMonitorFix(coords, updatedAt, detail.accuracy);
     };
 
     window.addEventListener(LOCATION_TICK_EVENT, handleLocationTick);
     return () => {
       window.removeEventListener(LOCATION_TICK_EVENT, handleLocationTick);
     };
-  }, [isProfileMonitor, locationEnabled, trailEnabled]);
-
-  useEffect(() => {
-    if (!isProfileMonitor || !locationEnabled) return () => null;
-    if (typeof navigator === "undefined" || !("geolocation" in navigator)) return () => null;
-
-    let highAccuracyWatchId = null;
-    let fallbackWatchId = null;
-
-    const acceptPosition = (position) => {
-      const coords = {
-        lat: Number(position?.coords?.latitude),
-        lng: Number(position?.coords?.longitude),
-      };
-      if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) return;
-      const accuracy = Number(position?.coords?.accuracy);
-      if (Number.isFinite(accuracy) && accuracy > 320) return;
-
-      const updatedAt = Number(position?.timestamp) || Date.now();
-      const previous = localMonitorFixRef.current?.coords || null;
-      const jumpMeters = distanceMetersBetween(previous, coords);
-      if (
-        previous &&
-        typeof jumpMeters === "number" &&
-        jumpMeters < 3 &&
-        updatedAt - (localMonitorFixRef.current?.updatedAt || 0) < 1200
-      ) {
-        return;
-      }
-
-      localMonitorFixRef.current = { coords, updatedAt };
-      setLocalMonitorCoords(coords);
-      setLocalMonitorUpdatedAt(updatedAt);
-
-      if (!trailEnabled) return;
-      setTrailPoints((current) => {
-        const previousTrail = current.length ? current[current.length - 1] : null;
-        const trailJumpMeters = distanceMetersBetween(previousTrail, coords);
-        if (
-          previousTrail &&
-          typeof trailJumpMeters === "number" &&
-          trailJumpMeters < TRAIL_MIN_POINT_METERS
-        ) {
-          return current;
-        }
-        return [...current, coords];
-      });
-    };
-
-    navigator.geolocation.getCurrentPosition(
-      acceptPosition,
-      () => null,
-      DISPLAY_GEOLOCATION_OPTIONS
-    );
-    navigator.geolocation.getCurrentPosition(
-      acceptPosition,
-      () => null,
-      DISPLAY_GEOLOCATION_FALLBACK_OPTIONS
-    );
-
-    highAccuracyWatchId = navigator.geolocation.watchPosition(
-      acceptPosition,
-      () => null,
-      DISPLAY_GEOLOCATION_OPTIONS
-    );
-    fallbackWatchId = navigator.geolocation.watchPosition(
-      acceptPosition,
-      () => null,
-      DISPLAY_GEOLOCATION_FALLBACK_OPTIONS
-    );
-
-    return () => {
-      if (highAccuracyWatchId !== null) {
-        navigator.geolocation.clearWatch(highAccuracyWatchId);
-      }
-      if (fallbackWatchId !== null) {
-        navigator.geolocation.clearWatch(fallbackWatchId);
-      }
-    };
-  }, [isProfileMonitor, locationEnabled, trailEnabled]);
+  }, [acceptLocalMonitorFix, isProfileMonitor, locationEnabled]);
 
   useEffect(() => {
     if (!profile?.institutionCode) return () => null;
@@ -729,14 +700,15 @@ function HomeContent() {
                   delete next[sourceKey];
                   return next;
                 }
+                const updatedAt = Math.max(
+                  toMillis(data?.updatedAt),
+                  parseCoord(data?.updatedAtClientMs) || 0,
+                  parseCoord(data?.updatedAtMs) || 0
+                );
                 next[sourceKey] = {
                   coords,
-                  updatedAt: Math.max(
-                    toMillis(data?.updatedAt),
-                    parseCoord(data?.updatedAtClientMs) || 0,
-                    parseCoord(data?.updatedAtMs) || 0,
-                    Date.now()
-                  ),
+                  updatedAt,
+                  accuracy: parseCoord(data?.accuracy),
                 };
                 return next;
               });
@@ -802,16 +774,27 @@ function HomeContent() {
   }, [routeCandidateIds, serviceDateKey, statusMaps]);
 
   const liveBusSnapshot = useMemo(() => {
+    const freshnessThreshold = liveBusNowMs - MAX_LIVE_BUS_AGE_MS;
     const entries = Object.entries(liveBusSources)
       .filter(([sourceKey]) => {
         const candidateId = sourceKey.split(":")[1];
         return !routeCandidateIds.length || routeCandidateIds.includes(candidateId);
       })
       .map(([, value]) => value)
-      .filter(Boolean)
-      .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
+      .filter((value) => value && Number(value.updatedAt || 0) >= freshnessThreshold)
+      .sort((left, right) => {
+        const timeDiff = (right.updatedAt || 0) - (left.updatedAt || 0);
+        if (timeDiff !== 0) return timeDiff;
+        const leftAccuracy = Number.isFinite(left?.accuracy)
+          ? Number(left.accuracy)
+          : Number.POSITIVE_INFINITY;
+        const rightAccuracy = Number.isFinite(right?.accuracy)
+          ? Number(right.accuracy)
+          : Number.POSITIVE_INFINITY;
+        return leftAccuracy - rightAccuracy;
+      });
     return entries[0] || null;
-  }, [liveBusSources, routeCandidateIds]);
+  }, [liveBusNowMs, liveBusSources, routeCandidateIds]);
 
   const busCoords = useMemo(() => {
     if (isProfileMonitor && locationEnabled && localMonitorCoords) {
@@ -1243,22 +1226,27 @@ function HomeContent() {
           lng: Number(position?.coords?.longitude),
         };
         if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) return;
-        setLocalMonitorCoords(coords);
-        setLocalMonitorUpdatedAt(Number(position?.timestamp) || Date.now());
-        queueFocus(coords, ZOOM_NEAR, "center-live");
+        const acceptedCoords = acceptLocalMonitorFix(
+          coords,
+          Number(position?.timestamp) || Date.now(),
+          Number(position?.coords?.accuracy)
+        );
+        if (!acceptedCoords) return;
+        queueFocus(acceptedCoords, ZOOM_NEAR, "center-live");
         setPulse(true);
         window.setTimeout(() => setPulse(false), 600);
       },
       () => null,
       {
         enableHighAccuracy: true,
-        maximumAge: 2000,
+        maximumAge: 0,
         timeout: 10000,
       }
     );
   }, [
     busCoords,
     currentStop?.coords,
+    acceptLocalMonitorFix,
     isProfileMonitor,
     locationEnabled,
     nextPendingStop?.coords,
@@ -1273,7 +1261,7 @@ function HomeContent() {
     window.dispatchEvent(new CustomEvent(LOCATION_TOGGLE_EVENT));
     setLocationEnabled(next);
     if (!next) {
-      localMonitorFixRef.current = { coords: null, updatedAt: 0 };
+      localMonitorFixRef.current = { coords: null, updatedAt: 0, accuracy: null };
       setLocalMonitorCoords(null);
       setLocalMonitorUpdatedAt(null);
     }

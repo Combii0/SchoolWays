@@ -5,7 +5,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "../lib/firebaseClient";
+import { doc, onSnapshot } from "firebase/firestore";
+import { auth, db } from "../lib/firebaseClient";
+import { isMonitorProfile } from "../lib/profileRoles";
 
 const ITEMS = [
   { href: "/", label: "Mapa", icon: "/icons/map.png" },
@@ -22,24 +24,55 @@ function normalizePath(path) {
 export default function FooterNav() {
   const pathname = usePathname();
   const [isAuthed, setIsAuthed] = useState(false);
+  const [isMonitor, setIsMonitor] = useState(false);
   const currentPath = normalizePath(pathname);
 
   useEffect(() => {
+    let unsubscribeProfile = null;
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setIsAuthed(Boolean(user));
+      setIsMonitor(false);
+
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
+
+      if (!user) {
+        return;
+      }
+
+      unsubscribeProfile = onSnapshot(
+        doc(db, "users", user.uid),
+        (snapshot) => {
+          const profile = snapshot.exists() ? snapshot.data() : null;
+          setIsMonitor(isMonitorProfile(profile));
+        },
+        () => {
+          setIsMonitor(false);
+        }
+      );
     });
 
-    return () => unsubscribe();
+    return () => {
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+      }
+      unsubscribe();
+    };
   }, []);
 
   if (!isAuthed) return null;
 
+  const visibleItems = ITEMS.filter((item) => item.href !== "/chat" || isMonitor);
+
   return (
     <footer
       className="footer-nav"
-      style={{ gridTemplateColumns: `repeat(${ITEMS.length}, minmax(0, 1fr))` }}
+      style={{ gridTemplateColumns: `repeat(${visibleItems.length}, minmax(0, 1fr))` }}
     >
-      {ITEMS.map((item) => {
+      {visibleItems.map((item) => {
         const itemPath = normalizePath(item.href);
         const isActive =
           itemPath === "/"

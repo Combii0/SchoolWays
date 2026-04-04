@@ -27,8 +27,8 @@ const buildHtmlIcon = ({ html, iconSize, iconAnchor }) =>
 const buildBusIcon = () =>
   buildHtmlIcon({
     html: `<div class="leaflet-bus-marker"></div>`,
-    iconSize: [60, 60],
-    iconAnchor: [30, 30],
+    iconSize: [64, 64],
+    iconAnchor: [32, 32],
   });
 
 const buildSchoolIcon = () =>
@@ -257,7 +257,7 @@ export default function LeafletRouteMap({
 
       {busTuple ? (
         <Marker position={busTuple} icon={buildBusIcon()}>
-          <Tooltip direction="top" offset={[0, -32]}>
+          <Tooltip direction="top" offset={[0, -36]}>
             <div className="leaflet-stop-tooltip">
               <strong>Bus escolar</strong>
             </div>

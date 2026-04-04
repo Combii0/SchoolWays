@@ -87,8 +87,8 @@ a {
 }
 
 .leaflet-bus-marker {
-  width: 60px;
-  height: 60px;
+  width: 64px;
+  height: 64px;
   background: url("/icons/bus.png") center/contain no-repeat;
   filter: drop-shadow(0 8px 12px rgba(15, 23, 42, 0.24));
 }

@@ -678,77 +678,10 @@ export default function AuthPanel({ onUserActionsChange = null }) {
 
   const pushUnsupported = pushPermission === "unsupported";
   const pushPermissionBlocked = pushPermission === "denied";
-  const accountDisplayName =
-    userProfile?.studentName ||
-    userProfile?.displayName ||
-    user?.displayName ||
-    user?.email ||
-    "Cuenta";
-  const accountRoute = userProfile?.route || "";
-  const accountInstitution =
-    userProfile?.institutionName || userProfile?.institutionCode || "";
-  const avatarInitial = accountDisplayName.toString().trim().charAt(0).toUpperCase() || "C";
-  const avatarPhoto = userProfile?.photoURL || user?.photoURL || "";
 
   return (
     <div className="auth-panel" ref={panelRef}>
-      {user ? (
-        <>
-          <button
-            type="button"
-            className="auth-avatar-button"
-            onClick={() => setOpen((value) => !value)}
-            aria-expanded={open}
-            aria-label="Abrir opciones de cuenta"
-          >
-            {avatarPhoto ? (
-              <div
-                className="auth-avatar"
-                style={{ backgroundImage: `url(${avatarPhoto})`, backgroundSize: "cover" }}
-                aria-hidden="true"
-              />
-            ) : (
-              <div className="auth-avatar">{avatarInitial}</div>
-            )}
-          </button>
-          {open ? (
-            <div className="auth-menu">
-              <div className="auth-menu-user">
-                <div className="auth-name">{accountDisplayName}</div>
-                <div className="auth-email">{user?.email || "Sin correo"}</div>
-                {accountRoute ? (
-                  <div className="auth-meta-line">Ruta: {accountRoute}</div>
-                ) : null}
-                {accountInstitution ? (
-                  <div className="auth-meta-line">{accountInstitution}</div>
-                ) : null}
-              </div>
-              {pushPermission !== "granted" ? (
-                <button
-                  type="button"
-                  className="auth-menu-action secondary"
-                  onClick={() => {
-                    void handleEnableNotifications();
-                  }}
-                  disabled={pushPending}
-                >
-                  {pushPending ? "Activando..." : "Activar notificaciones"}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="auth-menu-action"
-                onClick={() => {
-                  void handleLogout();
-                }}
-                disabled={pending}
-              >
-                {pending ? "Cerrando..." : "Cerrar sesión"}
-              </button>
-            </div>
-          ) : null}
-        </>
-      ) : (
+      {!user ? (
         <>
           {open ? (
             <div
@@ -1353,7 +1286,7 @@ export default function AuthPanel({ onUserActionsChange = null }) {
             </div>
           ) : null}
         </>
-      )}
+      ) : null}
 
       {!cookieConsent ? (
         <div className="cookie-banner">

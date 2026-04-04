@@ -14,30 +14,29 @@ export const LOCATION_TOGGLE_EVENT = "schoolways:location-toggle";
 export const LOCATION_ENABLED_STORAGE_KEY = "schoolways:location-enabled";
 const GEOLOCATION_OPTIONS = {
   enableHighAccuracy: true,
-  maximumAge: 2000,
+  maximumAge: 0,
   timeout: 20000,
 };
 const GEOLOCATION_FALLBACK_OPTIONS = {
   enableHighAccuracy: false,
-  maximumAge: 30000,
-  timeout: 12000,
+  maximumAge: 0,
+  timeout: 8000,
 };
-const HIGH_ACCURACY_MAX_METERS = 95;
-const NO_FIX_RELAX_AFTER_MS = 8000;
-const NO_FIX_RELAX_ACCURACY_METERS = 180;
-const TARGET_ACCURACY_METERS = 65;
-const HARD_REJECT_ACCURACY_METERS = 320;
-const MAX_NOISY_JUMP_METERS = 240;
-const STABLE_FIX_REUSE_MS = 5000;
-const RELAX_ACCURACY_AFTER_MS = 2500;
-const MAX_REPORTED_FIX_AGE_MS = 20000;
+const HIGH_ACCURACY_MAX_METERS = 80;
+const NO_FIX_RELAX_AFTER_MS = 12000;
+const NO_FIX_RELAX_ACCURACY_METERS = 125;
+const TARGET_ACCURACY_METERS = 45;
+const BEST_EFFORT_ACCURACY_METERS = 115;
+const HARD_REJECT_ACCURACY_METERS = 220;
+const MAX_NOISY_JUMP_METERS = 180;
+const STABLE_FIX_REUSE_MS = 12000;
+const RELAX_ACCURACY_AFTER_MS = 5000;
+const MAX_REPORTED_FIX_AGE_MS = 12000;
 
 const toText = (value) => {
   if (value === null || value === undefined) return "";
   return value.toString().trim();
 };
-
-const toLowerText = (value) => toText(value).toLowerCase();
 
 const normalizeRouteId = (value) =>
   toText(value)
@@ -149,7 +148,6 @@ export default function LiveLocationTicker() {
 
     let cancelled = false;
     let watchId = null;
-    let fallbackWatchId = null;
     const startedAtMs = Date.now();
     let latestFix = null;
     let stableFix = null;
@@ -227,13 +225,22 @@ export default function LiveLocationTicker() {
 
       if (stableFix && fixAgeMs(stableFix) <= STABLE_FIX_REUSE_MS) {
         const stableAccuracy = fixAccuracy(stableFix);
-        const latestIsClearlyWorse = latestAccuracy - stableAccuracy >= 25;
-        return latestIsClearlyWorse ? stableFix : latestFix;
+        if (latestAccuracy >= stableAccuracy + 12) {
+          return stableFix;
+        }
       }
 
-      if (Date.now() - startedAtMs >= RELAX_ACCURACY_AFTER_MS) {
+      if (
+        latestAccuracy <= BEST_EFFORT_ACCURACY_METERS &&
+        Date.now() - startedAtMs >= RELAX_ACCURACY_AFTER_MS
+      ) {
         return latestFix;
       }
+
+      if (stableFix && fixAgeMs(stableFix) <= STABLE_FIX_REUSE_MS) {
+        return stableFix;
+      }
+
       return null;
     };
 
@@ -263,15 +270,21 @@ export default function LiveLocationTicker() {
 
         const isNewer = fix.reportedAtMs >= latestFix.reportedAtMs;
         const significantlyBetterAccuracy = incomingAccuracy + 10 < latestAccuracy;
-        if (isNewer || significantlyBetterAccuracy) {
+        const comparableAccuracy = incomingAccuracy <= latestAccuracy + 12;
+        if (significantlyBetterAccuracy || (isNewer && comparableAccuracy)) {
           latestFix = fix;
         }
       } else {
         latestFix = fix;
       }
 
-      if (incomingAccuracy <= TARGET_ACCURACY_METERS) {
-        stableFix = latestFix;
+      if (
+        incomingAccuracy <= TARGET_ACCURACY_METERS &&
+        (!stableFix ||
+          incomingAccuracy <= fixAccuracy(stableFix) + 5 ||
+          fix.reportedAtMs >= stableFix.reportedAtMs)
+      ) {
+        stableFix = fix;
       }
 
       const selected = pickBestFixForNow() || latestFix;
@@ -332,10 +345,11 @@ export default function LiveLocationTicker() {
         if (cancelled) return;
         const fix = captureFix(position);
         if (!fix) return;
+        const preferred = pickBestFixForNow() || fix;
         const shouldWriteNow =
           lastSentAtMs === 0 || Date.now() - lastSentAtMs >= SEND_INTERVAL_MS - 250;
-        if (shouldWriteNow) {
-          void writeFix(fix, reason);
+        if (preferred && shouldWriteNow) {
+          void writeFix(preferred, reason);
         }
       };
 
@@ -376,8 +390,9 @@ export default function LiveLocationTicker() {
       if (cancelled) return;
       const fix = captureFix(position);
       if (!fix) return;
-      if (lastSentAtMs === 0) {
-        void writeFix(fix, `${reason}-first-fix`);
+      const preferred = pickBestFixForNow() || fix;
+      if (preferred && lastSentAtMs === 0) {
+        void writeFix(preferred, `${reason}-first-fix`);
       }
     };
 
@@ -404,16 +419,6 @@ export default function LiveLocationTicker() {
         handleWatchError(error, "watch");
       },
       GEOLOCATION_OPTIONS
-    );
-
-    fallbackWatchId = navigator.geolocation.watchPosition(
-      (position) => {
-        handleWatchPosition(position, "watch-fallback");
-      },
-      (error) => {
-        handleWatchError(error, "watch-fallback");
-      },
-      GEOLOCATION_FALLBACK_OPTIONS
     );
 
     const tick = () => {
@@ -445,9 +450,6 @@ export default function LiveLocationTicker() {
       window.clearInterval(intervalId);
       if (watchId !== null && "geolocation" in navigator) {
         navigator.geolocation.clearWatch(watchId);
-      }
-      if (fallbackWatchId !== null && "geolocation" in navigator) {
-        navigator.geolocation.clearWatch(fallbackWatchId);
       }
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", handleVisibilityChange);
