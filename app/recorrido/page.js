@@ -39,7 +39,7 @@ import { LOCATION_TICK_EVENT } from "../components/LiveLocationTicker";
 const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
 const ROUTE_LIVE_COLLECTIONS = ["routes", "rutas"];
 const ETA_REFRESH_INTERVAL_MS = 120000;
-const MAX_LIVE_BUS_AGE_MS = 25000;
+const MAX_LIVE_BUS_AGE_MS = 15000;
 
 const toLowerText = (value) =>
   value === null || value === undefined ? "" : value.toString().trim().toLowerCase();

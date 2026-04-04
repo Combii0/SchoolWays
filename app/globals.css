@@ -493,6 +493,36 @@ a {
   pointer-events: none;
 }
 
+.map-connection-alert {
+  position: fixed;
+  top: calc(max(12px, env(safe-area-inset-top)) + 74px);
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 24;
+  width: min(92vw, 440px);
+  margin: 0 auto;
+  border-radius: 18px;
+  padding: 12px 14px;
+  background: rgba(127, 29, 29, 0.94);
+  color: #fff7ed;
+  border: 1px solid rgba(254, 215, 170, 0.28);
+  box-shadow: 0 16px 32px rgba(69, 10, 10, 0.3);
+}
+
+.map-connection-alert-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.map-connection-alert-body {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #ffedd5;
+}
+
 .map-top-island-wrap > * {
   pointer-events: auto;
 }

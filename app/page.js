@@ -51,9 +51,10 @@ const TRAIL_MIN_POINT_METERS = 8;
 const ZOOM_NEAR = 16;
 const ZOOM_STOP = 17;
 const SHOW_SCHOOL_MARKER = false;
-const MAX_LIVE_BUS_AGE_MS = 25000;
+const MAX_LIVE_BUS_AGE_MS = 15000;
 const MAX_LAST_KNOWN_BUS_AGE_MS = 10 * 60 * 1000;
 const STUDENT_REFRESH_INTERVAL_MS = 5000;
+const MONITOR_OFFLINE_ALERT_AFTER_MS = MAX_LIVE_BUS_AGE_MS;
 const ROUTE_LOADING_OVERLAY_DELAY_MS = 150;
 const ROUTE_LOADING_OVERLAY_MAX_MS = 2000;
 const LOCAL_MONITOR_MAX_ACCURACY_METERS = 120;
@@ -265,6 +266,7 @@ function HomeContent() {
   const [focusRequest, setFocusRequest] = useState(null);
   const focusCounterRef = useRef(0);
   const localMonitorFixRef = useRef({ coords: null, updatedAt: 0, accuracy: null });
+  const monitorOfflineAlertRef = useRef("");
 
   const profile = session.profile;
   const profileRouteSignature = profile
@@ -984,14 +986,13 @@ function HomeContent() {
     if (isProfileMonitor && locationEnabled && localMonitorCoords) {
       return localMonitorCoords;
     }
-    return liveBusSnapshot?.coords || lastKnownLiveBusSnapshot?.coords || null;
-  }, [
-    isProfileMonitor,
-    lastKnownLiveBusSnapshot?.coords,
-    liveBusSnapshot?.coords,
-    localMonitorCoords,
-    locationEnabled,
-  ]);
+    return liveBusSnapshot?.coords || null;
+  }, [isProfileMonitor, liveBusSnapshot?.coords, localMonitorCoords, locationEnabled]);
+
+  const lastKnownBusCoords = useMemo(() => {
+    if (busCoords) return busCoords;
+    return lastKnownLiveBusSnapshot?.coords || null;
+  }, [busCoords, lastKnownLiveBusSnapshot?.coords]);
 
   const lastLocationUpdatedAt = useMemo(() => {
     if (isProfileMonitor && locationEnabled && localMonitorUpdatedAt) {
@@ -1004,6 +1005,21 @@ function HomeContent() {
     liveBusSnapshot?.updatedAt,
     localMonitorUpdatedAt,
     locationEnabled,
+  ]);
+
+  const monitorDisconnected = useMemo(() => {
+    if (isProfileMonitor) return false;
+    if (busCoords) return false;
+    if (!lastKnownLiveBusSnapshot?.coords) return false;
+    const lastSeenAt = Number(lastLocationUpdatedAt || 0);
+    if (!Number.isFinite(lastSeenAt) || lastSeenAt <= 0) return false;
+    return liveBusNowMs - lastSeenAt >= MONITOR_OFFLINE_ALERT_AFTER_MS;
+  }, [
+    busCoords,
+    isProfileMonitor,
+    lastKnownLiveBusSnapshot?.coords,
+    lastLocationUpdatedAt,
+    liveBusNowMs,
   ]);
 
   const rawStops = useMemo(
@@ -1329,7 +1345,7 @@ function HomeContent() {
         : null,
     [etaDistanceMeters]
   );
-  const etaTitle = etaTarget?.title || "Llegada";
+  const etaTitle = monitorDisconnected ? "Monitora desconectada" : etaTarget?.title || "Llegada";
 
   const profileDisplayName = getProfileDisplayName(profile) || "Estudiante";
   const lastUpdateLabel = Number.isFinite(lastLocationUpdatedAt)
@@ -1340,6 +1356,11 @@ function HomeContent() {
         hour12: false,
       }).format(lastLocationUpdatedAt)
     : "--:--:--";
+  const monitorConnectionLabel = monitorDisconnected
+    ? `Sin conexión desde ${lastUpdateLabel}`
+    : Number.isFinite(lastLocationUpdatedAt)
+      ? `En línea · última señal ${lastUpdateLabel}`
+      : "Esperando ubicación de la monitora";
   const assignedStopLabel = assignedStopAddress || "Sin paradero asignado";
   const studentStopOrderLabel = studentStopOrder !== null ? `#${studentStopOrder}` : "--";
   const monitorNextStopOrderLabel =
@@ -1382,10 +1403,11 @@ function HomeContent() {
 
   const initialMapFocusCoords = useMemo(() => {
     if (busCoords) return busCoords;
+    if (lastKnownBusCoords) return lastKnownBusCoords;
     if (preferredInitialStop) return preferredInitialStop.coords || null;
     if (schoolCoords) return schoolCoords;
     return null;
-  }, [busCoords, preferredInitialStop, schoolCoords]);
+  }, [busCoords, lastKnownBusCoords, preferredInitialStop, schoolCoords]);
 
   const initialMapFocusPending = useMemo(
     () => !busCoords && Boolean(preferredInitialStop) && !preferredInitialStop?.coords,
@@ -1407,7 +1429,8 @@ function HomeContent() {
   }, []);
 
   const handleCenter = useCallback(() => {
-    const targetCoords = busCoords || currentStop?.coords || nextPendingStop?.coords || schoolCoords;
+    const targetCoords =
+      busCoords || lastKnownBusCoords || currentStop?.coords || nextPendingStop?.coords || schoolCoords;
     if (targetCoords) {
       queueFocus(targetCoords, ZOOM_NEAR, "center");
       setPulse(true);
@@ -1444,6 +1467,7 @@ function HomeContent() {
     );
   }, [
     busCoords,
+    lastKnownBusCoords,
     currentStop?.coords,
     acceptLocalMonitorFix,
     isProfileMonitor,
@@ -1480,9 +1504,66 @@ function HomeContent() {
     }
   }, [localMonitorCoords, trailEnabled]);
 
+  useEffect(() => {
+    if (isProfileMonitor || !monitorDisconnected || !routeId || !session.uid) return;
+
+    const offlineAtMs = Number(lastLocationUpdatedAt || 0);
+    if (!Number.isFinite(offlineAtMs) || offlineAtMs <= 0) return;
+
+    const alertKey = `${session.uid}:${routeId}:${offlineAtMs}`;
+    if (monitorOfflineAlertRef.current === alertKey) return;
+    monitorOfflineAlertRef.current = alertKey;
+
+    let cancelled = false;
+    const notifyMonitorOffline = async () => {
+      try {
+        const currentUser = auth.currentUser;
+        if (!currentUser) return;
+        const idToken = await currentUser.getIdToken();
+        if (!idToken || cancelled) return;
+
+        await fetch("/api/push/monitor-status", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            eventType: "monitor_offline",
+            routeId,
+            institutionCode: profile?.institutionCode || null,
+            lastLocationUpdatedAt: offlineAtMs,
+          }),
+        });
+      } catch (error) {
+        console.warn("No se pudo avisar la desconexión de la monitora", error);
+      }
+    };
+
+    void notifyMonitorOffline();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isProfileMonitor,
+    lastLocationUpdatedAt,
+    monitorDisconnected,
+    profile?.institutionCode,
+    routeId,
+    session.uid,
+  ]);
+
   return (
     <main className="map-page">
       <AuthPanel onUserActionsChange={handleAuthActionsChange} />
+      {profile && !isProfileMonitor && monitorDisconnected ? (
+        <div className="map-connection-alert" role="alert" aria-live="assertive">
+          <div className="map-connection-alert-title">Monitora desconectada</div>
+          <div className="map-connection-alert-body">
+            No estamos recibiendo ubicación nueva del bus. Última señal: {lastUpdateLabel}.
+          </div>
+        </div>
+      ) : null}
       {markersLoading ? (
         <div className="map-loading-overlay" role="status" aria-live="polite">
           <div className="map-loading-card">
@@ -1554,7 +1635,7 @@ function HomeContent() {
                 <div className="map-top-island-label">Estado de ruta</div>
                 <div className="map-top-island-value">{profileRouteLabel}</div>
                 <div className="map-top-island-subline">
-                  {monitorSchoolLabel} · Actualizado {lastUpdateLabel}
+                  {monitorSchoolLabel} · {isProfileMonitor ? `Actualizado ${lastUpdateLabel}` : monitorConnectionLabel}
                 </div>
               </div>
               {routeSnapshot.error ? (
