@@ -51,10 +51,11 @@ const TRAIL_MIN_POINT_METERS = 8;
 const ZOOM_NEAR = 16;
 const ZOOM_STOP = 17;
 const SHOW_SCHOOL_MARKER = false;
-const MAX_LIVE_BUS_AGE_MS = 15000;
+const MAX_LIVE_BUS_AGE_MS = 45 * 1000;
+const MAX_RECENT_BUS_AGE_MS = 90 * 1000;
 const MAX_LAST_KNOWN_BUS_AGE_MS = 10 * 60 * 1000;
 const STUDENT_REFRESH_INTERVAL_MS = 5000;
-const MONITOR_OFFLINE_ALERT_AFTER_MS = MAX_LIVE_BUS_AGE_MS;
+const MONITOR_OFFLINE_ALERT_AFTER_MS = MAX_RECENT_BUS_AGE_MS;
 const ROUTE_LOADING_OVERLAY_DELAY_MS = 150;
 const ROUTE_LOADING_OVERLAY_MAX_MS = 2000;
 const LOCAL_MONITOR_MAX_ACCURACY_METERS = 120;
@@ -125,6 +126,53 @@ const toMillis = (value) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const resolveLiveBusUpdatedAt = (value) => {
+  const reportedAt = parseCoord(value?.updatedAtMs);
+  if (Number.isFinite(reportedAt) && reportedAt > 0) {
+    return reportedAt;
+  }
+
+  const clientUpdatedAt = parseCoord(value?.updatedAtClientMs);
+  if (Number.isFinite(clientUpdatedAt) && clientUpdatedAt > 0) {
+    return clientUpdatedAt;
+  }
+
+  return toMillis(value?.updatedAt);
+};
+
+const buildLiveBusSource = (value) => {
+  const coords = extractCoords(value);
+  if (!coords) return null;
+  return {
+    coords,
+    updatedAt: resolveLiveBusUpdatedAt(value),
+    accuracy: parseCoord(value?.accuracy),
+  };
+};
+
+const selectLiveBusSnapshot = (sources, routeCandidateIds, freshnessThreshold) => {
+  const routeCandidates = Array.isArray(routeCandidateIds) ? routeCandidateIds : [];
+  const entries = Object.entries(sources || {})
+    .filter(([sourceKey]) => {
+      const candidateId = sourceKey.split(":")[1];
+      return !routeCandidates.length || routeCandidates.includes(candidateId);
+    })
+    .map(([, value]) => value)
+    .filter((value) => value && Number(value.updatedAt || 0) >= freshnessThreshold)
+    .sort((left, right) => {
+      const timeDiff = (right.updatedAt || 0) - (left.updatedAt || 0);
+      if (timeDiff !== 0) return timeDiff;
+      const leftAccuracy = Number.isFinite(left?.accuracy)
+        ? Number(left.accuracy)
+        : Number.POSITIVE_INFINITY;
+      const rightAccuracy = Number.isFinite(right?.accuracy)
+        ? Number(right.accuracy)
+        : Number.POSITIVE_INFINITY;
+      return leftAccuracy - rightAccuracy;
+    });
+  return entries[0] || null;
 };
 
 const toRadians = (value) => (value * Math.PI) / 180;
@@ -267,6 +315,7 @@ function HomeContent() {
   const focusCounterRef = useRef(0);
   const localMonitorFixRef = useRef({ coords: null, updatedAt: 0, accuracy: null });
   const monitorOfflineAlertRef = useRef("");
+  const monitorOfflineAlertPendingRef = useRef("");
   const monitorConnectionStateRef = useRef({ initialized: false, disconnected: false });
 
   const profile = session.profile;
@@ -767,22 +816,12 @@ function HomeContent() {
                   delete next[sourceKey];
                   return next;
                 }
-                const data = snapshot.data() || {};
-                const coords = extractCoords(data);
-                if (!coords) {
+                const liveSource = buildLiveBusSource(snapshot.data() || {});
+                if (!liveSource) {
                   delete next[sourceKey];
                   return next;
                 }
-                const updatedAt = Math.max(
-                  toMillis(data?.updatedAt),
-                  parseCoord(data?.updatedAtClientMs) || 0,
-                  parseCoord(data?.updatedAtMs) || 0
-                );
-                next[sourceKey] = {
-                  coords,
-                  updatedAt,
-                  accuracy: parseCoord(data?.accuracy),
-                };
+                next[sourceKey] = liveSource;
                 return next;
               });
             },
@@ -827,25 +866,19 @@ function HomeContent() {
 
       setLiveBusSources((current) => {
         const next = { ...current };
-        liveTargets.forEach((target) => {
-          delete next[target.sourceKey];
-        });
         liveResults.forEach((result) => {
           if (result.status !== "fulfilled") return;
           const { sourceKey, snapshot } = result.value;
-          if (!snapshot.exists()) return;
-          const data = snapshot.data() || {};
-          const coords = extractCoords(data);
-          if (!coords) return;
-          next[sourceKey] = {
-            coords,
-            updatedAt: Math.max(
-              toMillis(data?.updatedAt),
-              parseCoord(data?.updatedAtClientMs) || 0,
-              parseCoord(data?.updatedAtMs) || 0
-            ),
-            accuracy: parseCoord(data?.accuracy),
-          };
+          if (!snapshot.exists()) {
+            delete next[sourceKey];
+            return;
+          }
+          const liveSource = buildLiveBusSource(snapshot.data() || {});
+          if (!liveSource) {
+            delete next[sourceKey];
+            return;
+          }
+          next[sourceKey] = liveSource;
         });
         return next;
       });
@@ -938,57 +971,27 @@ function HomeContent() {
   }, [routeCandidateIds, serviceDateKey, statusMaps]);
 
   const liveBusSnapshot = useMemo(() => {
-    const freshnessThreshold = liveBusNowMs - MAX_LIVE_BUS_AGE_MS;
-    const entries = Object.entries(liveBusSources)
-      .filter(([sourceKey]) => {
-        const candidateId = sourceKey.split(":")[1];
-        return !routeCandidateIds.length || routeCandidateIds.includes(candidateId);
-      })
-      .map(([, value]) => value)
-      .filter((value) => value && Number(value.updatedAt || 0) >= freshnessThreshold)
-      .sort((left, right) => {
-        const timeDiff = (right.updatedAt || 0) - (left.updatedAt || 0);
-        if (timeDiff !== 0) return timeDiff;
-        const leftAccuracy = Number.isFinite(left?.accuracy)
-          ? Number(left.accuracy)
-          : Number.POSITIVE_INFINITY;
-        const rightAccuracy = Number.isFinite(right?.accuracy)
-          ? Number(right.accuracy)
-          : Number.POSITIVE_INFINITY;
-        return leftAccuracy - rightAccuracy;
-      });
-    return entries[0] || null;
+    return selectLiveBusSnapshot(liveBusSources, routeCandidateIds, liveBusNowMs - MAX_LIVE_BUS_AGE_MS);
+  }, [liveBusNowMs, liveBusSources, routeCandidateIds]);
+
+  const recentLiveBusSnapshot = useMemo(() => {
+    return selectLiveBusSnapshot(liveBusSources, routeCandidateIds, liveBusNowMs - MAX_RECENT_BUS_AGE_MS);
   }, [liveBusNowMs, liveBusSources, routeCandidateIds]);
 
   const lastKnownLiveBusSnapshot = useMemo(() => {
-    const freshnessThreshold = liveBusNowMs - MAX_LAST_KNOWN_BUS_AGE_MS;
-    const entries = Object.entries(liveBusSources)
-      .filter(([sourceKey]) => {
-        const candidateId = sourceKey.split(":")[1];
-        return !routeCandidateIds.length || routeCandidateIds.includes(candidateId);
-      })
-      .map(([, value]) => value)
-      .filter((value) => value && Number(value.updatedAt || 0) >= freshnessThreshold)
-      .sort((left, right) => {
-        const timeDiff = (right.updatedAt || 0) - (left.updatedAt || 0);
-        if (timeDiff !== 0) return timeDiff;
-        const leftAccuracy = Number.isFinite(left?.accuracy)
-          ? Number(left.accuracy)
-          : Number.POSITIVE_INFINITY;
-        const rightAccuracy = Number.isFinite(right?.accuracy)
-          ? Number(right.accuracy)
-          : Number.POSITIVE_INFINITY;
-        return leftAccuracy - rightAccuracy;
-      });
-    return entries[0] || null;
+    return selectLiveBusSnapshot(
+      liveBusSources,
+      routeCandidateIds,
+      liveBusNowMs - MAX_LAST_KNOWN_BUS_AGE_MS
+    );
   }, [liveBusNowMs, liveBusSources, routeCandidateIds]);
 
   const busCoords = useMemo(() => {
     if (isProfileMonitor && locationEnabled && localMonitorCoords) {
       return localMonitorCoords;
     }
-    return liveBusSnapshot?.coords || null;
-  }, [isProfileMonitor, liveBusSnapshot?.coords, localMonitorCoords, locationEnabled]);
+    return liveBusSnapshot?.coords || recentLiveBusSnapshot?.coords || null;
+  }, [isProfileMonitor, liveBusSnapshot?.coords, localMonitorCoords, locationEnabled, recentLiveBusSnapshot?.coords]);
 
   const lastKnownBusCoords = useMemo(() => {
     if (busCoords) return busCoords;
@@ -999,10 +1002,16 @@ function HomeContent() {
     if (isProfileMonitor && locationEnabled && localMonitorUpdatedAt) {
       return localMonitorUpdatedAt;
     }
-    return liveBusSnapshot?.updatedAt || lastKnownLiveBusSnapshot?.updatedAt || null;
+    return (
+      liveBusSnapshot?.updatedAt ||
+      recentLiveBusSnapshot?.updatedAt ||
+      lastKnownLiveBusSnapshot?.updatedAt ||
+      null
+    );
   }, [
     isProfileMonitor,
     lastKnownLiveBusSnapshot?.updatedAt,
+    recentLiveBusSnapshot?.updatedAt,
     liveBusSnapshot?.updatedAt,
     localMonitorUpdatedAt,
     locationEnabled,
@@ -1512,18 +1521,28 @@ function HomeContent() {
     if (!Number.isFinite(offlineAtMs) || offlineAtMs <= 0) return;
 
     const alertKey = `${session.uid}:${routeId}:${offlineAtMs}`;
-    if (monitorOfflineAlertRef.current === alertKey) return;
-    monitorOfflineAlertRef.current = alertKey;
+    if (
+      monitorOfflineAlertRef.current === alertKey ||
+      monitorOfflineAlertPendingRef.current === alertKey
+    ) {
+      return;
+    }
+    monitorOfflineAlertPendingRef.current = alertKey;
 
     let cancelled = false;
     const notifyMonitorOffline = async () => {
       try {
         const currentUser = auth.currentUser;
-        if (!currentUser) return;
+        if (!currentUser) {
+          throw new Error("missing-current-user");
+        }
         const idToken = await currentUser.getIdToken();
-        if (!idToken || cancelled) return;
+        if (!idToken) {
+          throw new Error("missing-id-token");
+        }
+        if (cancelled) return;
 
-        await fetch("/api/push/monitor-status", {
+        const response = await fetch("/api/push/monitor-status", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1536,8 +1555,24 @@ function HomeContent() {
             lastLocationUpdatedAt: offlineAtMs,
           }),
         });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload?.error || `monitor-status-${response.status}`);
+        }
+        if (cancelled) return;
+        monitorOfflineAlertRef.current = alertKey;
+        if (!payload?.alreadySent && !payload?.deliveredInApp && !payload?.deliveredPush) {
+          console.warn(
+            "La alerta de monitora desconectada no tuvo entrega confirmada",
+            payload?.reason || "unknown"
+          );
+        }
       } catch (error) {
         console.warn("No se pudo avisar la desconexión de la monitora", error);
+      } finally {
+        if (monitorOfflineAlertPendingRef.current === alertKey) {
+          monitorOfflineAlertPendingRef.current = "";
+        }
       }
     };
 
@@ -1548,6 +1583,7 @@ function HomeContent() {
   }, [
     isProfileMonitor,
     lastLocationUpdatedAt,
+    liveBusNowMs,
     monitorDisconnected,
     profile?.institutionCode,
     routeId,
@@ -1573,8 +1609,9 @@ function HomeContent() {
       window.dispatchEvent(
         new CustomEvent("schoolways:push-foreground", {
           detail: {
-            title: "SchoolWays",
+            title: "Monitora reconectada",
             body: "La monitora volvió a conectarse. Ubicación actualizada.",
+            kind: "monitor-online",
           },
         })
       );

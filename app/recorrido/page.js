@@ -39,7 +39,7 @@ import { LOCATION_TICK_EVENT } from "../components/LiveLocationTicker";
 const ROUTE_STOPS_SUBCOLLECTIONS = ["direcciones", "addresses", "stops"];
 const ROUTE_LIVE_COLLECTIONS = ["routes", "rutas"];
 const ETA_REFRESH_INTERVAL_MS = 120000;
-const MAX_LIVE_BUS_AGE_MS = 15000;
+const MAX_LIVE_BUS_AGE_MS = 90 * 1000;
 
 const toLowerText = (value) =>
   value === null || value === undefined ? "" : value.toString().trim().toLowerCase();
@@ -140,6 +140,20 @@ const toMillis = (value) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const resolveLiveBusUpdatedAt = (value) => {
+  const reportedAt = parseCoord(value?.updatedAtMs);
+  if (Number.isFinite(reportedAt) && reportedAt > 0) {
+    return reportedAt;
+  }
+
+  const clientUpdatedAt = parseCoord(value?.updatedAtClientMs);
+  if (Number.isFinite(clientUpdatedAt) && clientUpdatedAt > 0) {
+    return clientUpdatedAt;
+  }
+
+  return toMillis(value?.updatedAt);
 };
 
 const mergeStatusMaps = (maps = []) => {
@@ -1044,11 +1058,7 @@ export default function RecorridoPage() {
 
                 next[sourceKey] = {
                   coords,
-                  updatedAt: Math.max(
-                    toMillis(data?.updatedAt),
-                    parseCoord(data?.updatedAtClientMs) || 0,
-                    parseCoord(data?.updatedAtMs) || 0
-                  ),
+                  updatedAt: resolveLiveBusUpdatedAt(data),
                   accuracy: parseCoord(data?.accuracy),
                 };
                 return next;

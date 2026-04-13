@@ -19,19 +19,24 @@ const GEOLOCATION_OPTIONS = {
 };
 const GEOLOCATION_FALLBACK_OPTIONS = {
   enableHighAccuracy: false,
-  maximumAge: 0,
-  timeout: 8000,
+  maximumAge: 12000,
+  timeout: 10000,
 };
-const HIGH_ACCURACY_MAX_METERS = 80;
-const NO_FIX_RELAX_AFTER_MS = 12000;
-const NO_FIX_RELAX_ACCURACY_METERS = 140;
-const TARGET_ACCURACY_METERS = 45;
-const BEST_EFFORT_ACCURACY_METERS = 115;
-const HARD_REJECT_ACCURACY_METERS = 220;
-const MAX_NOISY_JUMP_METERS = 180;
-const STABLE_FIX_REUSE_MS = 12000;
-const RELAX_ACCURACY_AFTER_MS = 5000;
-const MAX_REPORTED_FIX_AGE_MS = 12000;
+const HIGH_ACCURACY_MAX_METERS = 70;
+const NO_FIX_RELAX_AFTER_MS = 15000;
+const NO_FIX_RELAX_ACCURACY_METERS = 110;
+const TARGET_ACCURACY_METERS = 38;
+const BEST_EFFORT_ACCURACY_METERS = 85;
+const HARD_REJECT_ACCURACY_METERS = 180;
+const MAX_NOISY_JUMP_METERS = 140;
+const STABLE_FIX_REUSE_MS = 10000;
+const RELAX_ACCURACY_AFTER_MS = 7000;
+const MAX_REPORTED_FIX_AGE_MS = 10000;
+const COARSE_FALLBACK_AFTER_MS = 30000;
+const FIX_CLUSTER_WINDOW_MS = 9000;
+const MAX_RECENT_FIXES = 6;
+const MIN_CLUSTER_FIXES = 2;
+const MAX_CLUSTER_RADIUS_METERS = 48;
 
 const toText = (value) => {
   if (value === null || value === undefined) return "";
@@ -148,12 +153,14 @@ export default function LiveLocationTicker() {
 
     let cancelled = false;
     let watchId = null;
+    let queuedWrite = null;
     const startedAtMs = Date.now();
     let latestFix = null;
     let stableFix = null;
     let lastSentAtMs = 0;
     let lastAcceptedFixAtMs = 0;
     let lastWarnAtMs = 0;
+    let recentFixes = [];
     const route = toText(session.profile?.route);
     const routeId = normalizeRouteId(route);
     if (!routeId) return;
@@ -216,7 +223,109 @@ export default function LiveLocationTicker() {
     const fixAgeMs = (fix) =>
       Number.isFinite(fix?.receivedAtMs) ? Date.now() - Number(fix.receivedAtMs) : Number.POSITIVE_INFINITY;
 
-    const pickBestFixForNow = () => {
+    const pruneRecentFixes = (nowMs = Date.now()) => {
+      recentFixes = recentFixes
+        .filter((sample) => {
+          return sample && nowMs - Number(sample.receivedAtMs || 0) <= FIX_CLUSTER_WINDOW_MS;
+        })
+        .sort((left, right) => (right.reportedAtMs || 0) - (left.reportedAtMs || 0))
+        .slice(0, MAX_RECENT_FIXES);
+    };
+
+    const rememberFix = (fix) => {
+      if (!fix) return;
+      recentFixes = [
+        fix,
+        ...recentFixes.filter((sample) => {
+          const sameMoment = Math.abs((sample?.reportedAtMs || 0) - fix.reportedAtMs) <= 250;
+          const samePlace = distanceMetersBetween(sample, fix);
+          return !sameMoment || (typeof samePlace === "number" && samePlace > 3);
+        }),
+      ];
+      pruneRecentFixes(fix.receivedAtMs);
+    };
+
+    const buildSmoothedFix = (fallbackFix = null) => {
+      pruneRecentFixes();
+      const samples = recentFixes.filter((sample) => fixAgeMs(sample) <= FIX_CLUSTER_WINDOW_MS);
+      if (!samples.length) return fallbackFix;
+
+      const anchors = [
+        fallbackFix,
+        ...samples
+          .slice()
+          .sort((left, right) => fixAccuracy(left) - fixAccuracy(right) || right.reportedAtMs - left.reportedAtMs)
+          .slice(0, 3),
+      ].filter(Boolean);
+
+      let bestCluster = null;
+      anchors.forEach((anchor) => {
+        const anchorAccuracy = fixAccuracy(anchor);
+        const clusterRadius = Math.min(
+          MAX_CLUSTER_RADIUS_METERS,
+          Math.max(18, Math.round(anchorAccuracy * 0.75))
+        );
+        const cluster = samples.filter((sample) => {
+          const distance = distanceMetersBetween(anchor, sample);
+          return typeof distance !== "number" || distance <= clusterRadius;
+        });
+        if (!cluster.length) return;
+
+        const averageAccuracy =
+          cluster.reduce((sum, sample) => sum + fixAccuracy(sample), 0) / cluster.length;
+        const totalWeight = cluster.reduce((sum, sample) => {
+          const recencyWeight =
+            1 + Math.max(0, FIX_CLUSTER_WINDOW_MS - fixAgeMs(sample)) / FIX_CLUSTER_WINDOW_MS;
+          const accuracyWeight = 1 / Math.max(12, fixAccuracy(sample)) ** 2;
+          return sum + recencyWeight * accuracyWeight;
+        }, 0);
+        const score = cluster.length * 1000 + totalWeight * 100000 - averageAccuracy;
+        if (!bestCluster || score > bestCluster.score) {
+          bestCluster = { anchor, cluster, score };
+        }
+      });
+
+      if (!bestCluster) {
+        return fallbackFix || samples[0];
+      }
+      if (
+        bestCluster.cluster.length < MIN_CLUSTER_FIXES &&
+        fixAccuracy(bestCluster.anchor) > TARGET_ACCURACY_METERS
+      ) {
+        return fallbackFix || bestCluster.anchor;
+      }
+
+      const totals = bestCluster.cluster.reduce(
+        (accumulator, sample) => {
+          const recencyWeight =
+            1 + Math.max(0, FIX_CLUSTER_WINDOW_MS - fixAgeMs(sample)) / FIX_CLUSTER_WINDOW_MS;
+          const accuracyWeight = 1 / Math.max(12, fixAccuracy(sample)) ** 2;
+          const weight = recencyWeight * accuracyWeight;
+          return {
+            lat: accumulator.lat + sample.lat * weight,
+            lng: accumulator.lng + sample.lng * weight,
+            weight: accumulator.weight + weight,
+          };
+        },
+        { lat: 0, lng: 0, weight: 0 }
+      );
+      if (!Number.isFinite(totals.weight) || totals.weight <= 0) {
+        return fallbackFix || bestCluster.anchor;
+      }
+
+      return {
+        lat: totals.lat / totals.weight,
+        lng: totals.lng / totals.weight,
+        accuracy: Math.max(
+          8,
+          Math.round(Math.min(...bestCluster.cluster.map((sample) => fixAccuracy(sample))))
+        ),
+        reportedAtMs: Math.max(...bestCluster.cluster.map((sample) => sample.reportedAtMs || 0)),
+        receivedAtMs: Date.now(),
+      };
+    };
+
+    const pickRawFixForNow = () => {
       if (!latestFix) return null;
       const latestAccuracy = fixAccuracy(latestFix);
       if (latestAccuracy <= TARGET_ACCURACY_METERS) {
@@ -242,6 +351,11 @@ export default function LiveLocationTicker() {
       }
 
       return null;
+    };
+
+    const pickBestFixForNow = () => {
+      const preferred = pickRawFixForNow();
+      return buildSmoothedFix(preferred) || preferred;
     };
 
     const captureFix = (position) => {
@@ -287,6 +401,7 @@ export default function LiveLocationTicker() {
         stableFix = fix;
       }
 
+      rememberFix(fix);
       const selected = pickBestFixForNow() || latestFix;
       if (selected) {
         lastAcceptedFixAtMs = Date.now();
@@ -295,9 +410,12 @@ export default function LiveLocationTicker() {
       return selected;
     };
 
-    const writeFix = async (fix, reason = "interval") => {
-      if (!fix || cancelled) return;
-      if (inFlightRef.current) return;
+    const flushQueuedWrite = async () => {
+      if (cancelled || inFlightRef.current) return;
+      const nextWrite = queuedWrite;
+      if (!nextWrite?.fix) return;
+      queuedWrite = null;
+      const { fix, reason = "interval" } = nextWrite;
       inFlightRef.current = true;
 
       const sentAtMs = Date.now();
@@ -337,7 +455,17 @@ export default function LiveLocationTicker() {
         );
       } finally {
         inFlightRef.current = false;
+        if (queuedWrite && !cancelled) {
+          void flushQueuedWrite();
+        }
       }
+    };
+
+    const scheduleWrite = (fix, reason = "interval") => {
+      if (!fix || cancelled) return;
+      queuedWrite = { fix, reason };
+      if (inFlightRef.current) return;
+      void flushQueuedWrite();
     };
 
     const requestSingleFix = (reason = "single") => {
@@ -349,7 +477,7 @@ export default function LiveLocationTicker() {
         const shouldWriteNow =
           lastSentAtMs === 0 || Date.now() - lastSentAtMs >= SEND_INTERVAL_MS - 250;
         if (preferred && shouldWriteNow) {
-          void writeFix(preferred, reason);
+          scheduleWrite(preferred, reason);
         }
       };
 
@@ -365,18 +493,23 @@ export default function LiveLocationTicker() {
         );
       };
 
+      const shouldAttemptCoarseFallback = () =>
+        lastAcceptedFixAtMs === 0 || Date.now() - lastAcceptedFixAtMs >= COARSE_FALLBACK_AFTER_MS;
+
       navigator.geolocation.getCurrentPosition(
         handlePosition,
         (error) => {
           const code = Number(error?.code);
           const message = toText(error?.message) || "unknown";
           if (code === 2 || code === 3) {
-            // Timeout is common on some devices; fallback to a quick cached fix.
-            navigator.geolocation.getCurrentPosition(
-              handlePosition,
-              () => null,
-              GEOLOCATION_FALLBACK_OPTIONS
-            );
+            // Avoid downgrading to coarse fixes unless we have gone too long without a usable fix.
+            if (shouldAttemptCoarseFallback()) {
+              navigator.geolocation.getCurrentPosition(
+                handlePosition,
+                () => null,
+                GEOLOCATION_FALLBACK_OPTIONS
+              );
+            }
             return;
           }
           if (code === 2) return;
@@ -392,7 +525,7 @@ export default function LiveLocationTicker() {
       if (!fix) return;
       const preferred = pickBestFixForNow() || fix;
       if (preferred && lastSentAtMs === 0) {
-        void writeFix(preferred, `${reason}-first-fix`);
+        scheduleWrite(preferred, `${reason}-first-fix`);
       }
     };
 
@@ -417,7 +550,7 @@ export default function LiveLocationTicker() {
       const shouldWrite =
         preferred && (lastSentAtMs === 0 || Date.now() - lastSentAtMs >= SEND_INTERVAL_MS - 250);
       if (preferred && shouldWrite) {
-        void writeFix(preferred, `${reason}-cached`);
+        scheduleWrite(preferred, `${reason}-cached`);
       }
       requestSingleFix(reason);
     };
@@ -439,7 +572,7 @@ export default function LiveLocationTicker() {
         const shouldWrite =
           lastSentAtMs === 0 || Date.now() - lastSentAtMs >= SEND_INTERVAL_MS - 250;
         if (shouldWrite) {
-          void writeFix(preferred, "interval");
+          scheduleWrite(preferred, "interval");
         }
       }
       requestSingleFix(preferred ? "interval-refresh" : "interval-fallback");
@@ -467,6 +600,8 @@ export default function LiveLocationTicker() {
 
     return () => {
       cancelled = true;
+      queuedWrite = null;
+      inFlightRef.current = false;
       window.clearInterval(intervalId);
       if (watchId !== null && "geolocation" in navigator) {
         navigator.geolocation.clearWatch(watchId);
