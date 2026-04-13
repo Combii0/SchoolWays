@@ -33,8 +33,8 @@ const buildBusIcon = () =>
         <span class="leaflet-bus-marker__core"></span>
       </div>
     `,
-    iconSize: [88, 88],
-    iconAnchor: [44, 44],
+    iconSize: [74, 74],
+    iconAnchor: [37, 37],
   });
 
 const buildSchoolIcon = () =>
@@ -44,8 +44,8 @@ const buildSchoolIcon = () =>
         <span class="leaflet-school-marker__core"></span>
       </div>
     `,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17],
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
   });
 
 const buildStopIcon = (stop, selectedStopId) => {
@@ -61,8 +61,8 @@ const buildStopIcon = (stop, selectedStopId) => {
 
   return buildHtmlIcon({
     html: `<div class="${classes}"></div>`,
-    iconSize: [28, 40],
-    iconAnchor: [14, 36],
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
   });
 };
 
@@ -233,9 +233,9 @@ export default function LeafletRouteMap({
           <Polyline
             positions={trailTuples}
             pathOptions={{
-              color: "#0f766e",
-              weight: 16,
-              opacity: 0.16,
+              color: "#bed3fb",
+              weight: 14,
+              opacity: 0.38,
               lineCap: "round",
               lineJoin: "round",
             }}
@@ -243,19 +243,19 @@ export default function LeafletRouteMap({
           <Polyline
             positions={trailTuples}
             pathOptions={{
-              color: "#14b8a6",
-              weight: 8,
-              opacity: 0.96,
-              lineCap: "round",
-              lineJoin: "round",
-            }}
-          />
-          <Polyline
-            positions={trailTuples}
-            pathOptions={{
-              color: "#ecfeff",
-              weight: 3,
+              color: "#6b92e8",
+              weight: 7,
               opacity: 0.92,
+              lineCap: "round",
+              lineJoin: "round",
+            }}
+          />
+          <Polyline
+            positions={trailTuples}
+            pathOptions={{
+              color: "#f8fbff",
+              weight: 2.5,
+              opacity: 0.95,
               lineCap: "round",
               lineJoin: "round",
             }}
