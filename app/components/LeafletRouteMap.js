@@ -7,6 +7,12 @@ import { MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap } from "reac
 const DEFAULT_CENTER = [4.711, -74.0721];
 const DEFAULT_ZOOM = 13;
 const MAX_FIT_ZOOM = 17;
+const MAP_SAFE_PADDING = {
+  top: 120,
+  right: 32,
+  bottom: 238,
+  left: 32,
+};
 const MAP_TILE_URL =
   "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png";
 const MAP_LABELS_TILE_URL =
@@ -36,8 +42,8 @@ const buildBusIcon = (isStale = false) =>
         <img class="leaflet-bus-marker__image" src="/icons/bus.png" alt="" />
       </div>
     `,
-    iconSize: [72, 72],
-    iconAnchor: [36, 36],
+    iconSize: [56, 56],
+    iconAnchor: [28, 28],
   });
 
 const buildSchoolIcon = () =>
@@ -69,6 +75,30 @@ const buildStopIcon = (stop, selectedStopId) => {
   });
 };
 
+const getSafeAreaCenter = (map, coords, zoom) => {
+  const target = toTuple(coords);
+  if (!target) return null;
+
+  const offset = L.point(
+    (MAP_SAFE_PADDING.left - MAP_SAFE_PADDING.right) / 2,
+    (MAP_SAFE_PADDING.top - MAP_SAFE_PADDING.bottom) / 2
+  );
+  const projectedPoint = map.project(L.latLng(target), zoom);
+  return map.unproject(projectedPoint.subtract(offset), zoom);
+};
+
+const setViewWithinSafeArea = (map, coords, zoom, options = {}) => {
+  const target = toTuple(coords);
+  if (!target) return;
+
+  const resolvedZoom =
+    typeof zoom === "number" && Number.isFinite(zoom) ? zoom : map.getZoom() || DEFAULT_ZOOM;
+  const safeCenter = getSafeAreaCenter(map, target, resolvedZoom);
+  if (!safeCenter) return;
+
+  map.setView(safeCenter, resolvedZoom, options);
+};
+
 function ViewportController({
   viewportKey,
   fallbackPoints,
@@ -95,7 +125,7 @@ function ViewportController({
     const target = toTuple(focusRequest.coords);
     if (!target) return;
     lastFocusKeyRef.current = focusRequest.key;
-    map.setView(target, focusRequest.zoom || DEFAULT_ZOOM, {
+    setViewWithinSafeArea(map, target, focusRequest.zoom || DEFAULT_ZOOM, {
       animate: true,
     });
   }, [focusRequest, map]);
@@ -106,7 +136,9 @@ function ViewportController({
     const priorityTarget = toTuple(initialFocusCoords);
     if (priorityTarget) {
       initialViewportDoneRef.current = true;
-      map.setView(priorityTarget, initialFocusZoom || DEFAULT_ZOOM, { animate: false });
+      setViewWithinSafeArea(map, priorityTarget, initialFocusZoom || DEFAULT_ZOOM, {
+        animate: false,
+      });
       return;
     }
 
@@ -114,14 +146,15 @@ function ViewportController({
     initialViewportDoneRef.current = true;
 
     if (fallbackPoints.length === 1) {
-      map.setView(fallbackPoints[0], DEFAULT_ZOOM, { animate: false });
+      setViewWithinSafeArea(map, fallbackPoints[0], DEFAULT_ZOOM, { animate: false });
       return;
     }
 
     const bounds = L.latLngBounds(fallbackPoints);
     if (!bounds.isValid()) return;
     map.fitBounds(bounds, {
-      padding: [60, 60],
+      paddingTopLeft: [MAP_SAFE_PADDING.left, MAP_SAFE_PADDING.top],
+      paddingBottomRight: [MAP_SAFE_PADDING.right, MAP_SAFE_PADDING.bottom],
       maxZoom: MAX_FIT_ZOOM,
     });
   }, [fallbackPoints, initialFocusCoords, initialFocusPending, initialFocusZoom, map]);
@@ -277,7 +310,7 @@ export default function LeafletRouteMap({
       ) : null}
 
       {schoolTuple ? (
-        <Marker position={schoolTuple} icon={buildSchoolIcon()}>
+        <Marker position={schoolTuple} icon={buildSchoolIcon()} zIndexOffset={320}>
           <Tooltip direction="top" offset={[0, -16]}>
             <div className="leaflet-stop-tooltip">
               <strong>Colegio</strong>
@@ -287,7 +320,12 @@ export default function LeafletRouteMap({
       ) : null}
 
       {stopMarkers.map((stop) => (
-        <Marker key={stop.id} position={stop.tuple} icon={buildStopIcon(stop, selectedStopId)}>
+        <Marker
+          key={stop.id}
+          position={stop.tuple}
+          icon={buildStopIcon(stop, selectedStopId)}
+          zIndexOffset={420}
+        >
           <Tooltip direction="top" offset={[0, -22]}>
             <div className="leaflet-stop-tooltip">
               <strong>
@@ -301,8 +339,8 @@ export default function LeafletRouteMap({
       ))}
 
       {busTuple ? (
-        <Marker position={busTuple} icon={buildBusIcon(busStale)}>
-          <Tooltip direction="top" offset={[0, -44]}>
+        <Marker position={busTuple} icon={buildBusIcon(busStale)} zIndexOffset={560}>
+          <Tooltip direction="top" offset={[0, -34]}>
             <div className="leaflet-stop-tooltip">
               <strong>{busStale ? "Ultima ubicacion del bus" : "Bus escolar"}</strong>
               {busStale ? <span>Mostrando el ultimo punto valido recibido.</span> : null}
