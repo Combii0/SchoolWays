@@ -313,6 +313,7 @@ function HomeContent() {
   const [pulse, setPulse] = useState(false);
   const [focusRequest, setFocusRequest] = useState(null);
   const focusCounterRef = useRef(0);
+  const autoBusFocusKeyRef = useRef("");
   const localMonitorFixRef = useRef({ coords: null, updatedAt: 0, accuracy: null });
   const monitorOfflineAlertRef = useRef("");
   const monitorOfflineAlertPendingRef = useRef("");
@@ -1416,28 +1417,39 @@ function HomeContent() {
     queueFocus(selectedStop.coords, ZOOM_STOP, `stop:${selectedStop.id}`);
   }, [queueFocus, selectedStop?.coords, selectedStop?.id]);
 
+  const mapViewportKey = useMemo(
+    () =>
+      [session.uid, activeRouteRequestKey || routeId || profileRouteLabel].filter(Boolean).join(":"),
+    [activeRouteRequestKey, profileRouteLabel, routeId, session.uid]
+  );
+
+  const autoBusFocusKey = useMemo(() => {
+    if (!mapBusCoords) return "";
+    return [mapViewportKey, mapBusStale ? "stale" : "live"].filter(Boolean).join(":");
+  }, [mapBusCoords, mapBusStale, mapViewportKey]);
+
+  useEffect(() => {
+    if (!autoBusFocusKey || selectedStop?.coords) return;
+    if (autoBusFocusKeyRef.current === autoBusFocusKey) return;
+    autoBusFocusKeyRef.current = autoBusFocusKey;
+    queueFocus(mapBusCoords, ZOOM_NEAR, "auto-bus");
+  }, [autoBusFocusKey, mapBusCoords, queueFocus, selectedStop?.coords]);
+
   const preferredInitialStop = useMemo(
     () => (isProfileMonitor ? nextPendingStop || null : currentStop || null),
     [currentStop, isProfileMonitor, nextPendingStop]
   );
 
   const initialMapFocusCoords = useMemo(() => {
-    if (busCoords) return busCoords;
-    if (lastKnownBusCoords) return lastKnownBusCoords;
+    if (mapBusCoords) return mapBusCoords;
     if (preferredInitialStop) return preferredInitialStop.coords || null;
     if (schoolCoords) return schoolCoords;
     return null;
-  }, [busCoords, lastKnownBusCoords, preferredInitialStop, schoolCoords]);
+  }, [mapBusCoords, preferredInitialStop, schoolCoords]);
 
   const initialMapFocusPending = useMemo(
-    () => !busCoords && Boolean(preferredInitialStop) && !preferredInitialStop?.coords,
-    [busCoords, preferredInitialStop]
-  );
-
-  const mapViewportKey = useMemo(
-    () =>
-      [session.uid, activeRouteRequestKey || routeId || profileRouteLabel].filter(Boolean).join(":"),
-    [activeRouteRequestKey, profileRouteLabel, routeId, session.uid]
+    () => !mapBusCoords && Boolean(preferredInitialStop) && !preferredInitialStop?.coords,
+    [mapBusCoords, preferredInitialStop]
   );
 
   const handleAuthActionsChange = useCallback((nextActions) => {
