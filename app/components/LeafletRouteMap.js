@@ -215,9 +215,18 @@ export default function LeafletRouteMap({
       style={{ height: "100%", width: "100%" }}
     >
       <TileLayer
-        url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-        attribution="&copy; OpenStreetMap contributors"
-        className="map-tile-layer-atlas"
+        url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+        subdomains="abcd"
+        attribution="&copy; OpenStreetMap contributors &copy; CARTO"
+        className="map-tile-layer-base"
+      />
+      <TileLayer
+        url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png"
+        subdomains="abcd"
+        attribution=""
+        className="map-tile-layer-labels"
+        zIndex={250}
+        opacity={0.94}
       />
       <MapSizeController />
       <ViewportController
@@ -234,9 +243,9 @@ export default function LeafletRouteMap({
           <Polyline
             positions={trailTuples}
             pathOptions={{
-              color: "#bed3fb",
-              weight: 14,
-              opacity: 0.38,
+              color: "#d8ebff",
+              weight: 12,
+              opacity: 0.48,
               lineCap: "round",
               lineJoin: "round",
             }}
@@ -244,9 +253,9 @@ export default function LeafletRouteMap({
           <Polyline
             positions={trailTuples}
             pathOptions={{
-              color: "#6b92e8",
-              weight: 7,
-              opacity: 0.92,
+              color: "#4b80dd",
+              weight: 6,
+              opacity: 0.94,
               lineCap: "round",
               lineJoin: "round",
             }}
