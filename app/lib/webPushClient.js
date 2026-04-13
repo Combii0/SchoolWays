@@ -36,11 +36,15 @@ const bindForegroundNotifications = (messaging) => {
       payload?.data?.body ||
       payload?.notification?.body ||
       "Tienes una nueva notificacion de ruta.";
+    const kind =
+      payload?.data?.kind ||
+      payload?.notification?.tag ||
+      "generic";
 
     try {
       window.dispatchEvent(
         new CustomEvent("schoolways:push-foreground", {
-          detail: { title, body },
+          detail: { title, body, kind },
         })
       );
     } catch (error) {

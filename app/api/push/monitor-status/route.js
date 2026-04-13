@@ -100,7 +100,7 @@ const cleanupInvalidToken = async (db, uid, token) => {
   );
 };
 
-const enqueueInAppNotification = async ({ db, uid, routeId, message }) => {
+const enqueueInAppNotification = async ({ db, uid, routeId, title, message }) => {
   if (!uid || !message) return { delivered: false };
   const notificationId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -111,7 +111,7 @@ const enqueueInAppNotification = async ({ db, uid, routeId, message }) => {
         {
           lastRouteNotification: {
             id: notificationId,
-            title: "SchoolWays",
+            title: title || "SchoolWays",
             body: message,
             kind: "monitor-offline",
             routeId: routeId || null,
@@ -126,7 +126,7 @@ const enqueueInAppNotification = async ({ db, uid, routeId, message }) => {
   }
 };
 
-const sendPushMessage = async ({ messaging, db, uid, profile, routeId, message }) => {
+const sendPushMessage = async ({ messaging, db, uid, profile, routeId, title, message }) => {
   const tokens = extractPushTokens(profile);
   if (!tokens.length) {
     return { delivered: false, tokenCount: 0, reason: "no-token" };
@@ -135,11 +135,12 @@ const sendPushMessage = async ({ messaging, db, uid, profile, routeId, message }
   const payload = {
     tokens,
     data: {
-      title: "SchoolWays",
+      title: title || "SchoolWays",
       body: message,
       routeId,
       kind: "monitor-offline",
       at: Date.now().toString(),
+      link: "/",
     },
     webpush: {
       headers: {
@@ -147,11 +148,20 @@ const sendPushMessage = async ({ messaging, db, uid, profile, routeId, message }
         TTL: "120",
       },
       notification: {
-        title: "SchoolWays",
+        title: title || "SchoolWays",
         body: message,
         icon: "/logo.png",
         badge: "/favicon.ico",
         tag: "schoolways-monitor-offline",
+        image: "/icons/map.png",
+        requireInteraction: true,
+        renotify: true,
+        actions: [
+          {
+            action: "open-route",
+            title: "Abrir mapa",
+          },
+        ],
       },
       fcmOptions: {
         link: "/",
@@ -288,12 +298,14 @@ export async function POST(request) {
   }
 
   const lastSeenLabel = formatOfflineTime(offlineAtMs);
+  const title = "Monitora desconectada";
   const message = `La monitora se desconectó temporalmente del servidor. Última señal: ${lastSeenLabel}.`;
 
   const inAppResult = await enqueueInAppNotification({
     db,
     uid: decoded.uid,
     routeId,
+    title,
     message,
   });
   const pushResult = await sendPushMessage({
@@ -302,8 +314,21 @@ export async function POST(request) {
     uid: decoded.uid,
     profile,
     routeId,
+    title,
     message,
   });
+
+  if (!inAppResult.delivered && !pushResult.delivered) {
+    return NextResponse.json(
+      {
+        error: "No se pudo entregar la alerta",
+        deliveredInApp: false,
+        deliveredPush: false,
+        reason: pushResult.reason || "undelivered",
+      },
+      { status: 503 }
+    );
+  }
 
   await stateRef.set(
     {

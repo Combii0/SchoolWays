@@ -154,7 +154,7 @@ const isInvalidTokenCode = (code) => {
   );
 };
 
-const enqueueInAppNotification = async ({ db, student, message }) => {
+const enqueueInAppNotification = async ({ db, student, title, message }) => {
   if (!student?.uid || !message) return { delivered: false };
   const notificationId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -165,7 +165,7 @@ const enqueueInAppNotification = async ({ db, student, message }) => {
         {
           lastRouteNotification: {
             id: notificationId,
-            title: "SchoolWays",
+            title: title || "SchoolWays",
             body: message,
             kind: "student-route-update",
             routeId: student.routeId || null,
@@ -222,7 +222,7 @@ const cleanupInvalidToken = async (db, uid, token) => {
   );
 };
 
-const sendPushMessage = async ({ messaging, db, student, message }) => {
+const sendPushMessage = async ({ messaging, db, student, title, message }) => {
   const tokens = extractPushTokens(student.profile);
   if (!tokens.length) {
     return { delivered: false, tokenCount: 0, reason: "no-token" };
@@ -231,11 +231,12 @@ const sendPushMessage = async ({ messaging, db, student, message }) => {
   const payload = {
     tokens,
     data: {
-      title: "SchoolWays",
+      title: title || "SchoolWays",
       body: message,
       routeId: student.routeId,
       kind: "student-route-update",
       at: Date.now().toString(),
+      link: "/recorrido",
     },
     webpush: {
       headers: {
@@ -243,11 +244,18 @@ const sendPushMessage = async ({ messaging, db, student, message }) => {
         TTL: "120",
       },
       notification: {
-        title: "SchoolWays",
+        title: title || "SchoolWays",
         body: message,
         icon: "/logo.png",
         badge: "/favicon.ico",
         tag: "schoolways-route-alert",
+        image: "/icons/map.png",
+        actions: [
+          {
+            action: "open-route",
+            title: "Ver recorrido",
+          },
+        ],
       },
       fcmOptions: {
         link: "/recorrido",
@@ -670,11 +678,12 @@ export async function POST(request) {
     }
 
     diagnostics.attempted += 1;
-    const inAppResult = await enqueueInAppNotification({ db, student, message });
+    const title = "Actualizacion de ruta";
+    const inAppResult = await enqueueInAppNotification({ db, student, title, message });
     if (inAppResult.delivered) {
       diagnostics.inAppDelivered += 1;
     }
-    const pushResult = await sendPushMessage({ messaging, db, student, message });
+    const pushResult = await sendPushMessage({ messaging, db, student, title, message });
     if (!pushResult.delivered && !inAppResult.delivered) {
       if (pushResult.reason === "no-token") {
         diagnostics.noToken += 1;

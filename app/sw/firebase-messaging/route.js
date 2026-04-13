@@ -29,16 +29,40 @@ messaging.onBackgroundMessage((payload) => {
     payload?.data?.body ||
     payload?.notification?.body ||
     "Tienes una nueva notificacion de ruta.";
+  const kind =
+    payload?.data?.kind ||
+    payload?.notification?.tag ||
+    "student-route-update";
+  const link =
+    payload?.fcmOptions?.link ||
+    payload?.data?.link ||
+    payload?.notification?.click_action ||
+    "/recorrido";
+  const tag =
+    payload?.notification?.tag ||
+    (kind === "monitor-offline" ? "schoolways-monitor-offline" : "schoolways-route-alert");
+  const actions = Array.isArray(payload?.notification?.actions)
+    ? payload.notification.actions
+    : [
+        {
+          action: "open-route",
+          title: kind === "monitor-offline" ? "Abrir mapa" : "Ver recorrido",
+        },
+      ];
 
   self.registration.showNotification(title, {
     body,
-    icon: "/logo.png",
-    badge: "/favicon.ico",
-    vibrate: [220, 120, 220],
-    renotify: true,
-    tag: "schoolways-route-alert",
+    icon: payload?.notification?.icon || "/logo.png",
+    badge: payload?.notification?.badge || "/favicon.ico",
+    image: payload?.notification?.image || "/icons/map.png",
+    vibrate: kind === "monitor-offline" ? [220, 120, 220, 120, 260] : [180, 90, 180],
+    renotify: payload?.notification?.renotify !== false,
+    requireInteraction: Boolean(payload?.notification?.requireInteraction),
+    tag,
+    actions,
     data: {
-      link: "/recorrido",
+      link,
+      kind,
     },
   });
 });
