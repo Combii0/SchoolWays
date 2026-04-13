@@ -8,7 +8,7 @@ import { isMonitorProfile } from "../lib/profileRoles";
 
 const SEND_INTERVAL_MS = 5000;
 const LOCATION_LOG_TAG = `global-${Math.round(SEND_INTERVAL_MS / 1000)}s`;
-const ROUTE_LIVE_COLLECTIONS = ["routes", "rutas"];
+const ROUTE_LIVE_WRITE_COLLECTIONS = ["routes"];
 export const LOCATION_TICK_EVENT = "schoolways:location-tick";
 export const LOCATION_TOGGLE_EVENT = "schoolways:location-toggle";
 export const LOCATION_ENABLED_STORAGE_KEY = "schoolways:location-enabled";
@@ -430,7 +430,7 @@ export default function LiveLocationTicker() {
       );
 
       try {
-        const writes = ROUTE_LIVE_COLLECTIONS.map((rootCollection) => {
+        const writes = ROUTE_LIVE_WRITE_COLLECTIONS.map((rootCollection) => {
           const liveRef = doc(db, rootCollection, routeId, "live", "current");
           return setDoc(
             liveRef,
@@ -447,7 +447,11 @@ export default function LiveLocationTicker() {
             { merge: true }
           );
         });
-        await Promise.allSettled(writes);
+        const results = await Promise.allSettled(writes);
+        const successfulWrites = results.filter((result) => result.status === "fulfilled").length;
+        if (!successfulWrites) {
+          throw new Error("no-live-write-succeeded");
+        }
         lastSentAtMs = sentAtMs;
       } catch (error) {
         console.warn(

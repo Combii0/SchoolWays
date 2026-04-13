@@ -998,6 +998,16 @@ function HomeContent() {
     return lastKnownLiveBusSnapshot?.coords || null;
   }, [busCoords, lastKnownLiveBusSnapshot?.coords]);
 
+  const mapBusCoords = useMemo(() => {
+    if (busCoords) return busCoords;
+    if (isProfileMonitor) return null;
+    return lastKnownBusCoords;
+  }, [busCoords, isProfileMonitor, lastKnownBusCoords]);
+
+  const mapBusStale = useMemo(() => {
+    return !isProfileMonitor && !busCoords && Boolean(lastKnownBusCoords);
+  }, [busCoords, isProfileMonitor, lastKnownBusCoords]);
+
   const lastLocationUpdatedAt = useMemo(() => {
     if (isProfileMonitor && locationEnabled && localMonitorUpdatedAt) {
       return localMonitorUpdatedAt;
@@ -1640,7 +1650,8 @@ function HomeContent() {
       >
         {profile ? (
           <LeafletRouteMap
-            busCoords={busCoords}
+            busCoords={mapBusCoords}
+            busStale={mapBusStale}
             schoolCoords={SHOW_SCHOOL_MARKER ? schoolCoords : null}
             stops={stops}
             trailPoints={trailPoints}

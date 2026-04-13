@@ -24,10 +24,10 @@ const buildHtmlIcon = ({ html, iconSize, iconAnchor }) =>
     iconAnchor,
   });
 
-const buildBusIcon = () =>
+const buildBusIcon = (isStale = false) =>
   buildHtmlIcon({
     html: `
-      <div class="leaflet-bus-marker">
+      <div class="leaflet-bus-marker${isStale ? " is-stale" : ""}">
         <span class="leaflet-bus-marker__pulse"></span>
         <span class="leaflet-bus-marker__ring"></span>
         <span class="leaflet-bus-marker__core"></span>
@@ -165,6 +165,7 @@ function MapSizeController() {
 
 export default function LeafletRouteMap({
   busCoords = null,
+  busStale = false,
   schoolCoords = null,
   stops = [],
   trailPoints = [],
@@ -288,10 +289,11 @@ export default function LeafletRouteMap({
       ))}
 
       {busTuple ? (
-        <Marker position={busTuple} icon={buildBusIcon()}>
+        <Marker position={busTuple} icon={buildBusIcon(busStale)}>
           <Tooltip direction="top" offset={[0, -44]}>
             <div className="leaflet-stop-tooltip">
-              <strong>Bus escolar</strong>
+              <strong>{busStale ? "Ultima ubicacion del bus" : "Bus escolar"}</strong>
+              {busStale ? <span>Mostrando el ultimo punto valido recibido.</span> : null}
             </div>
           </Tooltip>
         </Marker>
