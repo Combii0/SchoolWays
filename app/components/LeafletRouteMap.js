@@ -10,6 +10,8 @@ const MAX_FIT_ZOOM = 17;
 const MINIMAL_TILE_URL =
   "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}";
 const MINIMAL_TILE_ATTRIBUTION = "&copy; Esri";
+const MINIMAL_REFERENCE_TILE_URL =
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 
 const toTuple = (coords) => {
   if (!coords) return null;
@@ -63,9 +65,9 @@ const buildStopIcon = (stop, selectedStopId) => {
     .join(" ");
 
   return buildHtmlIcon({
-    html: `<div class="${classes}"></div>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    html: `<div class="${classes}"><span class="leaflet-stop-pin__dot"></span></div>`,
+    iconSize: [30, 38],
+    iconAnchor: [15, 34],
   });
 };
 
@@ -222,6 +224,13 @@ export default function LeafletRouteMap({
         attribution={MINIMAL_TILE_ATTRIBUTION}
         className="map-tile-layer-base"
       />
+      <TileLayer
+        url={MINIMAL_REFERENCE_TILE_URL}
+        attribution=""
+        className="map-tile-layer-reference"
+        zIndex={250}
+        opacity={0.72}
+      />
       <MapSizeController />
       <ViewportController
         viewportKey={viewportKey}
@@ -248,7 +257,7 @@ export default function LeafletRouteMap({
             positions={trailTuples}
             pathOptions={{
               color: "#4c83dd",
-              weight: 4,
+              weight: 5,
               opacity: 0.92,
               lineCap: "round",
               lineJoin: "round",
@@ -279,7 +288,7 @@ export default function LeafletRouteMap({
 
       {stopMarkers.map((stop) => (
         <Marker key={stop.id} position={stop.tuple} icon={buildStopIcon(stop, selectedStopId)}>
-          <Tooltip direction="top" offset={[0, -16]}>
+          <Tooltip direction="top" offset={[0, -22]}>
             <div className="leaflet-stop-tooltip">
               <strong>
                 #{stop.order} {stop.title}
