@@ -7,6 +7,9 @@ import { MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap } from "reac
 const DEFAULT_CENTER = [4.711, -74.0721];
 const DEFAULT_ZOOM = 13;
 const MAX_FIT_ZOOM = 17;
+const MINIMAL_TILE_URL =
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}";
+const MINIMAL_TILE_ATTRIBUTION = "&copy; Esri";
 
 const toTuple = (coords) => {
   if (!coords) return null;
@@ -215,18 +218,9 @@ export default function LeafletRouteMap({
       style={{ height: "100%", width: "100%" }}
     >
       <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
-        subdomains="abcd"
-        attribution="&copy; OpenStreetMap contributors &copy; CARTO"
+        url={MINIMAL_TILE_URL}
+        attribution={MINIMAL_TILE_ATTRIBUTION}
         className="map-tile-layer-base"
-      />
-      <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png"
-        subdomains="abcd"
-        attribution=""
-        className="map-tile-layer-labels"
-        zIndex={250}
-        opacity={0.94}
       />
       <MapSizeController />
       <ViewportController
@@ -243,9 +237,9 @@ export default function LeafletRouteMap({
           <Polyline
             positions={trailTuples}
             pathOptions={{
-              color: "#d8ebff",
-              weight: 12,
-              opacity: 0.48,
+              color: "#dbe9ff",
+              weight: 10,
+              opacity: 0.52,
               lineCap: "round",
               lineJoin: "round",
             }}
@@ -253,9 +247,9 @@ export default function LeafletRouteMap({
           <Polyline
             positions={trailTuples}
             pathOptions={{
-              color: "#4b80dd",
-              weight: 6,
-              opacity: 0.94,
+              color: "#4c83dd",
+              weight: 4,
+              opacity: 0.92,
               lineCap: "round",
               lineJoin: "round",
             }}
