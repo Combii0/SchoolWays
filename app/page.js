@@ -61,7 +61,10 @@ const ROUTE_LOADING_OVERLAY_MAX_MS = 2000;
 const LOCAL_MONITOR_MAX_ACCURACY_METERS = 120;
 const LOCAL_MONITOR_ACCURACY_DEGRADATION_METERS = 18;
 const LOCAL_MONITOR_NOISY_JUMP_METERS = 160;
+const LOCAL_MONITOR_MOVING_NOISY_JUMP_METERS = 320;
 const LOCAL_MONITOR_STICKY_WINDOW_MS = 12000;
+const LOCAL_MONITOR_MOVING_SPEED_MPS = 2.2;
+const LOCAL_MONITOR_MAX_PLAUSIBLE_SPEED_MPS = 32;
 const EMPTY_AUTH_ACTIONS = Object.freeze({
   hasUser: false,
   canEnableNotifications: false,
@@ -97,6 +100,11 @@ const parseCoord = (value) => {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+};
+
+const parseNonNegativeNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
 
 const extractCoords = (value) => {
@@ -202,6 +210,12 @@ const distanceMetersBetween = (from, to) => {
     Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * sinLng * sinLng;
   const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
   return earthRadius * cc;
+};
+
+const inferSpeedMetersPerSecond = (distanceMeters, deltaMs) => {
+  if (typeof distanceMeters !== "number" || !Number.isFinite(distanceMeters)) return null;
+  if (!Number.isFinite(deltaMs) || deltaMs < 1000) return null;
+  return distanceMeters / (deltaMs / 1000);
 };
 
 const mergeStatusMaps = (maps = []) => {
@@ -314,7 +328,7 @@ function HomeContent() {
   const [focusRequest, setFocusRequest] = useState(null);
   const focusCounterRef = useRef(0);
   const autoBusFocusKeyRef = useRef("");
-  const localMonitorFixRef = useRef({ coords: null, updatedAt: 0, accuracy: null });
+  const localMonitorFixRef = useRef({ coords: null, updatedAt: 0, accuracy: null, speed: null });
   const monitorOfflineAlertRef = useRef("");
   const monitorOfflineAlertPendingRef = useRef("");
   const monitorConnectionStateRef = useRef({ initialized: false, disconnected: false });
@@ -366,7 +380,7 @@ function HomeContent() {
   }, []);
 
   const acceptLocalMonitorFix = useCallback(
-    (coords, updatedAt = Date.now(), accuracy = null) => {
+    (coords, updatedAt = Date.now(), accuracy = null, speed = null) => {
       if (!coords) return null;
 
       const numericAccuracy = Number(accuracy);
@@ -375,17 +389,28 @@ function HomeContent() {
         return null;
       }
 
+      const nextSpeed = parseNonNegativeNumber(speed);
+
       const previousFix = localMonitorFixRef.current || {
         coords: null,
         updatedAt: 0,
         accuracy: null,
+        speed: null,
       };
       const previousCoords = previousFix.coords || null;
       const previousAccuracy = Number.isFinite(Number(previousFix.accuracy))
         ? Number(previousFix.accuracy)
         : null;
+      const previousSpeed = parseNonNegativeNumber(previousFix.speed);
       const jumpMeters = distanceMetersBetween(previousCoords, coords);
       const updatedDeltaMs = Math.max(0, updatedAt - (previousFix.updatedAt || 0));
+      const inferredSpeed = inferSpeedMetersPerSecond(jumpMeters, updatedDeltaMs);
+      const movementLikely =
+        (nextSpeed !== null && nextSpeed >= LOCAL_MONITOR_MOVING_SPEED_MPS) ||
+        (previousSpeed !== null && previousSpeed >= LOCAL_MONITOR_MOVING_SPEED_MPS) ||
+        (inferredSpeed !== null &&
+          inferredSpeed >= 0.8 &&
+          inferredSpeed <= LOCAL_MONITOR_MAX_PLAUSIBLE_SPEED_MPS);
 
       if (previousCoords && typeof jumpMeters === "number") {
         if (jumpMeters < 3 && updatedDeltaMs < 1200) {
@@ -399,11 +424,18 @@ function HomeContent() {
         const noisyLargeJump =
           nextAccuracy !== null &&
           nextAccuracy > 80 &&
-          jumpMeters > LOCAL_MONITOR_NOISY_JUMP_METERS;
+          jumpMeters >
+            (movementLikely
+              ? LOCAL_MONITOR_MOVING_NOISY_JUMP_METERS
+              : LOCAL_MONITOR_NOISY_JUMP_METERS);
+        const implausibleJump =
+          inferredSpeed !== null && inferredSpeed > LOCAL_MONITOR_MAX_PLAUSIBLE_SPEED_MPS;
 
         if (
-          (degradedAccuracy && jumpMeters > 30 && updatedDeltaMs < LOCAL_MONITOR_STICKY_WINDOW_MS) ||
-          noisyLargeJump
+          implausibleJump ||
+          ((degradedAccuracy && jumpMeters > 30 && updatedDeltaMs < LOCAL_MONITOR_STICKY_WINDOW_MS) ||
+            noisyLargeJump) &&
+            !movementLikely
         ) {
           return previousCoords;
         }
@@ -413,6 +445,7 @@ function HomeContent() {
         coords,
         updatedAt,
         accuracy: nextAccuracy,
+        speed: nextSpeed ?? inferredSpeed,
       };
       setLocalMonitorCoords(coords);
       setLocalMonitorUpdatedAt(updatedAt);
@@ -506,7 +539,7 @@ function HomeContent() {
       setTrailPoints([]);
       setLocalMonitorCoords(null);
       setLocalMonitorUpdatedAt(null);
-      localMonitorFixRef.current = { coords: null, updatedAt: 0, accuracy: null };
+      localMonitorFixRef.current = { coords: null, updatedAt: 0, accuracy: null, speed: null };
       setResolvedStopCoords({});
       setResolvedSchoolCoords(null);
       setInstitutionSnapshot({ name: "", address: "", coords: null });
@@ -568,7 +601,7 @@ function HomeContent() {
       const coords = extractCoords(detail);
       if (!coords) return;
       const updatedAt = Date.parse(detail.reportedAt || detail.sentAt || "") || Date.now();
-      acceptLocalMonitorFix(coords, updatedAt, detail.accuracy);
+      acceptLocalMonitorFix(coords, updatedAt, detail.accuracy, detail.speed);
     };
 
     window.addEventListener(LOCATION_TICK_EVENT, handleLocationTick);
@@ -1483,7 +1516,8 @@ function HomeContent() {
         const acceptedCoords = acceptLocalMonitorFix(
           coords,
           Number(position?.timestamp) || Date.now(),
-          Number(position?.coords?.accuracy)
+          Number(position?.coords?.accuracy),
+          Number(position?.coords?.speed)
         );
         if (!acceptedCoords) return;
         queueFocus(acceptedCoords, ZOOM_NEAR, "center-live");
@@ -1516,7 +1550,7 @@ function HomeContent() {
     window.dispatchEvent(new CustomEvent(LOCATION_TOGGLE_EVENT));
     setLocationEnabled(next);
     if (!next) {
-      localMonitorFixRef.current = { coords: null, updatedAt: 0, accuracy: null };
+      localMonitorFixRef.current = { coords: null, updatedAt: 0, accuracy: null, speed: null };
       setLocalMonitorCoords(null);
       setLocalMonitorUpdatedAt(null);
     }

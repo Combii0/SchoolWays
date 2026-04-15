@@ -29,14 +29,21 @@ const TARGET_ACCURACY_METERS = 38;
 const BEST_EFFORT_ACCURACY_METERS = 85;
 const HARD_REJECT_ACCURACY_METERS = 180;
 const MAX_NOISY_JUMP_METERS = 140;
+const MAX_MOVING_JUMP_METERS = 320;
 const STABLE_FIX_REUSE_MS = 10000;
+const MOVING_STABLE_FIX_REUSE_MS = 2500;
 const RELAX_ACCURACY_AFTER_MS = 7000;
 const MAX_REPORTED_FIX_AGE_MS = 10000;
 const COARSE_FALLBACK_AFTER_MS = 30000;
 const FIX_CLUSTER_WINDOW_MS = 9000;
+const MOVING_FIX_CLUSTER_WINDOW_MS = 2500;
 const MAX_RECENT_FIXES = 6;
 const MIN_CLUSTER_FIXES = 2;
 const MAX_CLUSTER_RADIUS_METERS = 48;
+const MOVING_CLUSTER_RADIUS_METERS = 24;
+const MOVING_SPEED_THRESHOLD_MPS = 2.2;
+const MIN_MOVEMENT_DISTANCE_METERS = 18;
+const MAX_PLAUSIBLE_SPEED_MPS = 32;
 
 const toText = (value) => {
   if (value === null || value === undefined) return "";
@@ -76,6 +83,56 @@ const distanceMetersBetween = (a, b) => {
     Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * sinLng * sinLng;
   const cc = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
   return earthRadius * cc;
+};
+
+const fixSpeed = (fix) => {
+  const speed = Number(fix?.speed);
+  return Number.isFinite(speed) && speed >= 0 ? speed : null;
+};
+
+const fixTimestampMs = (fix) => {
+  const reportedAtMs = Number(fix?.reportedAtMs);
+  if (Number.isFinite(reportedAtMs) && reportedAtMs > 0) return reportedAtMs;
+  const receivedAtMs = Number(fix?.receivedAtMs);
+  return Number.isFinite(receivedAtMs) && receivedAtMs > 0 ? receivedAtMs : 0;
+};
+
+const movementMetricsBetween = (from, to) => {
+  const distance = distanceMetersBetween(from, to);
+  const fromAt = fixTimestampMs(from);
+  const toAt = fixTimestampMs(to);
+  const deltaMs = Math.max(0, toAt - fromAt);
+  const inferredSpeed =
+    typeof distance === "number" && deltaMs >= 1000 ? distance / (deltaMs / 1000) : null;
+  return {
+    distance,
+    deltaMs,
+    inferredSpeed,
+  };
+};
+
+const hasRecentMotion = (samples = [], primaryFix = null, secondaryFix = null) => {
+  const ordered = [primaryFix, secondaryFix, ...samples]
+    .filter(Boolean)
+    .sort((left, right) => fixTimestampMs(right) - fixTimestampMs(left))
+    .slice(0, MAX_RECENT_FIXES);
+  if (ordered.some((fix) => (fixSpeed(fix) || 0) >= MOVING_SPEED_THRESHOLD_MPS)) {
+    return true;
+  }
+  if (ordered.length < 2) return false;
+
+  const newest = ordered[0];
+  const oldest = ordered[ordered.length - 1];
+  const { distance, deltaMs, inferredSpeed } = movementMetricsBetween(oldest, newest);
+  if (typeof distance !== "number" || deltaMs < 2500) return false;
+  if (
+    typeof inferredSpeed === "number" &&
+    inferredSpeed >= MOVING_SPEED_THRESHOLD_MPS &&
+    inferredSpeed <= MAX_PLAUSIBLE_SPEED_MPS
+  ) {
+    return true;
+  }
+  return distance >= MIN_MOVEMENT_DISTANCE_METERS && deltaMs <= FIX_CLUSTER_WINDOW_MS;
 };
 
 const readLocationEnabled = () => {
@@ -192,12 +249,19 @@ export default function LiveLocationTicker() {
         return null;
       }
 
+      const rawSpeed = Number(position?.coords?.speed);
+      const speed = Number.isFinite(rawSpeed) && rawSpeed >= 0 ? rawSpeed : null;
+      const rawHeading = Number(position?.coords?.heading);
+      const heading = Number.isFinite(rawHeading) && rawHeading >= 0 ? rawHeading : null;
+
       return {
         lat,
         lng,
         accuracy,
         reportedAtMs,
         receivedAtMs: nowMs,
+        speed,
+        heading,
       };
     };
 
@@ -210,6 +274,8 @@ export default function LiveLocationTicker() {
             lat: fix.lat,
             lng: fix.lng,
             accuracy: fix.accuracy,
+            speed: fix.speed,
+            heading: fix.heading,
             sentAt,
             reportedAt,
           },
@@ -245,25 +311,31 @@ export default function LiveLocationTicker() {
       pruneRecentFixes(fix.receivedAtMs);
     };
 
-    const buildSmoothedFix = (fallbackFix = null) => {
+    const buildSmoothedFix = (fallbackFix = null, preferLatest = false) => {
       pruneRecentFixes();
-      const samples = recentFixes.filter((sample) => fixAgeMs(sample) <= FIX_CLUSTER_WINDOW_MS);
+      const smoothingWindowMs = preferLatest ? MOVING_FIX_CLUSTER_WINDOW_MS : FIX_CLUSTER_WINDOW_MS;
+      const samples = recentFixes.filter((sample) => fixAgeMs(sample) <= smoothingWindowMs);
       if (!samples.length) return fallbackFix;
 
-      const anchors = [
-        fallbackFix,
-        ...samples
-          .slice()
-          .sort((left, right) => fixAccuracy(left) - fixAccuracy(right) || right.reportedAtMs - left.reportedAtMs)
-          .slice(0, 3),
-      ].filter(Boolean);
+      const anchors = preferLatest
+        ? [fallbackFix, samples[0]].filter(Boolean)
+        : [
+            fallbackFix,
+            ...samples
+              .slice()
+              .sort(
+                (left, right) =>
+                  fixAccuracy(left) - fixAccuracy(right) || right.reportedAtMs - left.reportedAtMs
+              )
+              .slice(0, 3),
+          ].filter(Boolean);
 
       let bestCluster = null;
       anchors.forEach((anchor) => {
         const anchorAccuracy = fixAccuracy(anchor);
         const clusterRadius = Math.min(
-          MAX_CLUSTER_RADIUS_METERS,
-          Math.max(18, Math.round(anchorAccuracy * 0.75))
+          preferLatest ? MOVING_CLUSTER_RADIUS_METERS : MAX_CLUSTER_RADIUS_METERS,
+          Math.max(preferLatest ? 10 : 18, Math.round(anchorAccuracy * (preferLatest ? 0.45 : 0.75)))
         );
         const cluster = samples.filter((sample) => {
           const distance = distanceMetersBetween(anchor, sample);
@@ -275,9 +347,10 @@ export default function LiveLocationTicker() {
           cluster.reduce((sum, sample) => sum + fixAccuracy(sample), 0) / cluster.length;
         const totalWeight = cluster.reduce((sum, sample) => {
           const recencyWeight =
-            1 + Math.max(0, FIX_CLUSTER_WINDOW_MS - fixAgeMs(sample)) / FIX_CLUSTER_WINDOW_MS;
+            1 + Math.max(0, smoothingWindowMs - fixAgeMs(sample)) / smoothingWindowMs;
           const accuracyWeight = 1 / Math.max(12, fixAccuracy(sample)) ** 2;
-          return sum + recencyWeight * accuracyWeight;
+          const recencyBias = preferLatest ? recencyWeight * recencyWeight : recencyWeight;
+          return sum + recencyBias * accuracyWeight;
         }, 0);
         const score = cluster.length * 1000 + totalWeight * 100000 - averageAccuracy;
         if (!bestCluster || score > bestCluster.score) {
@@ -298,9 +371,10 @@ export default function LiveLocationTicker() {
       const totals = bestCluster.cluster.reduce(
         (accumulator, sample) => {
           const recencyWeight =
-            1 + Math.max(0, FIX_CLUSTER_WINDOW_MS - fixAgeMs(sample)) / FIX_CLUSTER_WINDOW_MS;
+            1 + Math.max(0, smoothingWindowMs - fixAgeMs(sample)) / smoothingWindowMs;
           const accuracyWeight = 1 / Math.max(12, fixAccuracy(sample)) ** 2;
-          const weight = recencyWeight * accuracyWeight;
+          const recencyBias = preferLatest ? recencyWeight * recencyWeight : recencyWeight;
+          const weight = recencyBias * accuracyWeight;
           return {
             lat: accumulator.lat + sample.lat * weight,
             lng: accumulator.lng + sample.lng * weight,
@@ -322,40 +396,45 @@ export default function LiveLocationTicker() {
         ),
         reportedAtMs: Math.max(...bestCluster.cluster.map((sample) => sample.reportedAtMs || 0)),
         receivedAtMs: Date.now(),
+        speed: fixSpeed(bestCluster.cluster[0]),
+        heading: bestCluster.cluster[0]?.heading ?? null,
       };
     };
 
-    const pickRawFixForNow = () => {
+    const pickRawFixForNow = (isMoving) => {
       if (!latestFix) return null;
       const latestAccuracy = fixAccuracy(latestFix);
       if (latestAccuracy <= TARGET_ACCURACY_METERS) {
         return latestFix;
       }
 
-      if (stableFix && fixAgeMs(stableFix) <= STABLE_FIX_REUSE_MS) {
+      const stableReuseMs = isMoving ? MOVING_STABLE_FIX_REUSE_MS : STABLE_FIX_REUSE_MS;
+      if (!isMoving && stableFix && fixAgeMs(stableFix) <= stableReuseMs) {
         const stableAccuracy = fixAccuracy(stableFix);
         if (latestAccuracy >= stableAccuracy + 12) {
           return stableFix;
         }
       }
 
+      const relaxAfterMs = isMoving ? 0 : RELAX_ACCURACY_AFTER_MS;
       if (
         latestAccuracy <= BEST_EFFORT_ACCURACY_METERS &&
-        Date.now() - startedAtMs >= RELAX_ACCURACY_AFTER_MS
+        Date.now() - startedAtMs >= relaxAfterMs
       ) {
         return latestFix;
       }
 
-      if (stableFix && fixAgeMs(stableFix) <= STABLE_FIX_REUSE_MS) {
+      if (!isMoving && stableFix && fixAgeMs(stableFix) <= stableReuseMs) {
         return stableFix;
       }
 
-      return null;
+      return isMoving ? latestFix : null;
     };
 
     const pickBestFixForNow = () => {
-      const preferred = pickRawFixForNow();
-      return buildSmoothedFix(preferred) || preferred;
+      const isMoving = hasRecentMotion(recentFixes, latestFix, stableFix);
+      const preferred = pickRawFixForNow(isMoving);
+      return buildSmoothedFix(preferred, isMoving) || preferred;
     };
 
     const captureFix = (position) => {
@@ -365,14 +444,22 @@ export default function LiveLocationTicker() {
 
       if (latestFix) {
         const latestAccuracy = fixAccuracy(latestFix);
-        const jumpMeters = distanceMetersBetween(latestFix, fix);
+        const { distance: jumpMeters, inferredSpeed } = movementMetricsBetween(latestFix, fix);
         const latestIsRecent = fixAgeMs(latestFix) <= STABLE_FIX_REUSE_MS;
+        const isMoving = hasRecentMotion(recentFixes, fix, latestFix);
+        const plausibleMovement =
+          isMoving &&
+          typeof jumpMeters === "number" &&
+          jumpMeters >= MIN_MOVEMENT_DISTANCE_METERS &&
+          typeof inferredSpeed === "number" &&
+          inferredSpeed <= MAX_PLAUSIBLE_SPEED_MPS;
         const noisyBigJump =
           incomingAccuracy > TARGET_ACCURACY_METERS &&
           typeof jumpMeters === "number" &&
-          jumpMeters > MAX_NOISY_JUMP_METERS;
+          jumpMeters > (isMoving ? MAX_MOVING_JUMP_METERS : MAX_NOISY_JUMP_METERS);
         const shouldRejectNoisy =
           latestIsRecent &&
+          !plausibleMovement &&
           (incomingAccuracy > HARD_REJECT_ACCURACY_METERS || noisyBigJump);
         if (shouldRejectNoisy) {
           const fallback = pickBestFixForNow() || latestFix;
@@ -384,8 +471,9 @@ export default function LiveLocationTicker() {
 
         const isNewer = fix.reportedAtMs >= latestFix.reportedAtMs;
         const significantlyBetterAccuracy = incomingAccuracy + 10 < latestAccuracy;
-        const comparableAccuracy = incomingAccuracy <= latestAccuracy + 12;
-        if (significantlyBetterAccuracy || (isNewer && comparableAccuracy)) {
+        const comparableAccuracy = incomingAccuracy <= latestAccuracy + (isMoving ? 30 : 12);
+        const plausibleNewerMovement = isNewer && plausibleMovement;
+        if (significantlyBetterAccuracy || plausibleNewerMovement || (isNewer && comparableAccuracy)) {
           latestFix = fix;
         }
       } else {
@@ -440,6 +528,8 @@ export default function LiveLocationTicker() {
               lat: fix.lat,
               lng: fix.lng,
               accuracy: fix.accuracy,
+              speed: fix.speed,
+              heading: fix.heading,
               updatedAtClientMs: sentAtMs,
               updatedAtMs: fix.reportedAtMs,
               updatedAt: serverTimestamp(),
